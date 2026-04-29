@@ -15,7 +15,7 @@ export interface Env {
   ASSETS: Fetcher;
   DEMO_MODE: string;
   GEMINI_API_KEY?: string;
-  GEMINI_LIVE_MODEL?: string; // override default; otherwise gemini-2.0-flash-live-001
+  GEMINI_LIVE_MODEL?: string; // override default; otherwise gemini-3.1-flash-live-preview
 }
 
 const json = (data: unknown, status = 200) =>
@@ -44,7 +44,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
           ok: true,
           demo: env.DEMO_MODE === 'true',
           hasGeminiKey: !!env.GEMINI_API_KEY,
-          model: env.GEMINI_LIVE_MODEL ?? 'gemini-2.0-flash-live-001',
+          model: env.GEMINI_LIVE_MODEL ?? 'gemini-3.1-flash-live-preview',
           ts: new Date().toISOString(),
         });
       case '/api/live-token':
@@ -75,7 +75,7 @@ async function mintLiveToken(env: Env): Promise<Response> {
       ok: true,
       demo: true,
       token: 'DEMO_TOKEN_NO_REAL_API',
-      model: 'gemini-2.0-flash-live-001',
+      model: 'gemini-3.1-flash-live-preview',
       expireTime: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
     });
   }
@@ -86,21 +86,18 @@ async function mintLiveToken(env: Env): Promise<Response> {
   const newSessionExpireTime = new Date(now + 60 * 1000).toISOString();
   const expireTime = new Date(now + 30 * 60 * 1000).toISOString();
 
+  // v1alpha/auth_tokens (Live API preview) currently only honors `?key=` query
+  // param auth, not `x-goog-api-key` header. Trade: key briefly in outbound URL
+  // (Worker fetch doesn't log URLs by default; add no logging that captures it).
   const tokenRes = await fetch(
-    'https://generativelanguage.googleapis.com/v1alpha/auth_tokens',
+    `https://generativelanguage.googleapis.com/v1alpha/auth_tokens?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
     {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-goog-api-key': env.GEMINI_API_KEY,
-      },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        config: {
-          uses: 1,
-          newSessionExpireTime,
-          expireTime,
-          httpOptions: { apiVersion: 'v1alpha' },
-        },
+        uses: 1,
+        newSessionExpireTime,
+        expireTime,
       }),
     },
   );
@@ -109,7 +106,7 @@ async function mintLiveToken(env: Env): Promise<Response> {
     // Sanitize: Google error bodies can echo request metadata. Log internally,
     // return a generic message to the client.
     const detail = await tokenRes.text().catch(() => '');
-    console.error('gemini auth_tokens failed', tokenRes.status, detail);
+    console.error('gemini auth_tokens failed', tokenRes.status, detail.slice(0, 500));
     return errJson('token mint failed', 502);
   }
 
@@ -118,7 +115,7 @@ async function mintLiveToken(env: Env): Promise<Response> {
     ok: true,
     demo: false,
     token: data.name,
-    model: env.GEMINI_LIVE_MODEL ?? 'gemini-2.0-flash-live-001',
+    model: env.GEMINI_LIVE_MODEL ?? 'gemini-3.1-flash-live-preview',
     expireTime: data.expireTime,
   });
 }

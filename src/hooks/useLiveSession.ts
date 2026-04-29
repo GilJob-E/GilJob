@@ -170,8 +170,12 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
 
     setupCompleteRef.current = false;
 
+    // Ephemeral tokens (auth_tokens/...) are minted under v1alpha and the
+    // method is `BidiGenerateContentConstrained` (not BidiGenerateContent).
+    // Per @google/genai SDK convention: token prefix triggers v1alpha and the
+    // constrained method; auth via ?access_token=.
     const url =
-      `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` +
+      `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained` +
       `?access_token=${encodeURIComponent(tokenData.token)}`;
 
     let ws: WebSocket;
