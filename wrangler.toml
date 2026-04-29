@@ -1,0 +1,18 @@
+name = "giljob-e"
+main = "worker/index.ts"
+compatibility_date = "2026-04-29"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[vars]
+DEMO_MODE = "true"
+
+# Real API integration (set via `wrangler secret put`):
+#   ANTHROPIC_API_KEY    — Claude
+#   GEMINI_API_KEY       — Gemini Flash (vision)
+#   ELEVENLABS_API_KEY   — TTS
+#   ELEVENLABS_VOICE_ID  — 한국어 voice ID
