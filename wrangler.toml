@@ -12,7 +12,7 @@ not_found_handling = "single-page-application"
 DEMO_MODE = "true"
 
 # Real API integration (set via `wrangler secret put`):
-#   ANTHROPIC_API_KEY    — Claude
-#   GEMINI_API_KEY       — Gemini Flash (vision)
-#   ELEVENLABS_API_KEY   — TTS
-#   ELEVENLABS_VOICE_ID  — 한국어 voice ID
+#   GEMINI_API_KEY  — Gemini Live API (STT + Vision + LLM + TTS in one stream)
+#
+# Optional override:
+#   GEMINI_LIVE_MODEL  — default `gemini-2.0-flash-live-001`
