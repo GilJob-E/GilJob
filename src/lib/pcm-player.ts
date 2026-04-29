@@ -17,6 +17,12 @@ export class PCMPlayer {
       this.ctx = new AudioContext({ sampleRate: 24000 });
       this.nextStartTime = this.ctx.currentTime;
     }
+    // Browsers may suspend the context if it was created outside a user
+    // gesture (e.g. created lazily on first server audio after a click in a
+    // sibling component). Best-effort resume; ignored if already running.
+    if (this.ctx.state === 'suspended') {
+      void this.ctx.resume();
+    }
     return this.ctx;
   }
 

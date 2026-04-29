@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+
+// Build marker — bump on every change so caching can be diagnosed in DevTools.
+console.log('[live build] v10 — dynamic question authoring');
 import type { AudioCaptureHandle } from '../lib/audio-capture';
 import { startAudioCapture } from '../lib/audio-capture';
 import { PCMPlayer } from '../lib/pcm-player';
@@ -106,6 +109,28 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   }, [cleanupTurnAudio]);
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
+    // Quiet trace: only log frames that carry actionable signal (transcript,
+    // turn boundaries, errors). Audio-only chunks are skipped so the console
+    // stays readable across multi-turn sessions.
+    if (typeof console !== 'undefined') {
+      const sc = msg.serverContent;
+      const hasTranscript = !!(sc?.inputTranscription?.text || sc?.outputTranscription?.text);
+      const hasBoundary = !!(sc?.turnComplete || sc?.generationComplete || sc?.interrupted);
+      const hasText = !!sc?.modelTurn?.parts?.some(p => p.text);
+      const interesting = msg.setupComplete || msg.goAway || hasTranscript || hasBoundary || hasText;
+      if (interesting) {
+        const debug: Record<string, unknown> = {};
+        if (msg.setupComplete) debug.setupComplete = true;
+        if (sc?.inputTranscription?.text) debug.inputTranscript = sc.inputTranscription.text;
+        if (sc?.outputTranscription?.text) debug.outputTranscript = sc.outputTranscription.text;
+        if (sc?.generationComplete) debug.generationComplete = true;
+        if (sc?.turnComplete) debug.turnComplete = true;
+        if (sc?.interrupted) debug.interrupted = true;
+        if (msg.goAway) debug.goAway = msg.goAway;
+        console.log('[live]', debug);
+      }
+    }
+
     if (msg.setupComplete) {
       setupCompleteRef.current = true;
       setState('ready');
@@ -117,13 +142,19 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
 
     const parts = sc.modelTurn?.parts ?? [];
     for (const p of parts) {
-      if (p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/pcm')) {
+      // Audio chunks: any audio/* mime type with data.
+      if (p.inlineData?.data && p.inlineData.mimeType?.startsWith('audio/')) {
         if (!firstAudioFiredRef.current) {
           firstAudioFiredRef.current = true;
           optsRef.current.onFirstAudio?.();
         }
         playerRef.current?.enqueue(p.inlineData.data);
         setState('speaking');
+      }
+      // Text parts: treat as output transcript so the UI shows them even if
+      // server returns text-only without audio.
+      if (p.text) {
+        optsRef.current.onOutputTranscript?.(p.text);
       }
     }
 
@@ -197,6 +228,9 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
           },
           generationConfig: {
             responseModalities: ['AUDIO'],
+            speechConfig: {
+              languageCode: 'ko-KR',
+            },
           },
           realtimeInputConfig: {
             // Manual VAD: client signals turn boundaries via activityStart/End.
@@ -207,6 +241,7 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
           outputAudioTranscription: {},
         },
       };
+      console.log('[live send] setup', setup);
       ws.send(JSON.stringify(setup));
     };
 
@@ -217,13 +252,14 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
       } else if (typeof e.data === 'string') {
         raw = e.data;
       } else {
+        console.log('[live recv raw]', 'non-text frame', e.data);
         return;
       }
       try {
         const msg = JSON.parse(raw) as ServerMessage;
         handleServerMessage(msg);
-      } catch {
-        /* unparseable frame; ignore */
+      } catch (err) {
+        console.warn('[live recv] JSON parse failed', err);
       }
     };
 
@@ -299,14 +335,14 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     turnStartTsRef.current = Date.now();
     firstAudioFiredRef.current = false;
-    ws.send(
-      JSON.stringify({
-        clientContent: {
-          turns: [{ role: 'user', parts: [{ text }] }],
-          turnComplete: true,
-        },
-      }),
-    );
+    // BidiGenerateContentConstrained (ephemeral-token method) appears to only
+    // accept `realtimeInput`. Send text as a realtimeInput turn followed by
+    // activityEnd so the server treats it as a completed user utterance.
+    const payload = { realtimeInput: { text } };
+    const finishPayload = { realtimeInput: { activityEnd: {} } };
+    console.log('[live send] realtimeInput.text', payload);
+    ws.send(JSON.stringify(payload));
+    ws.send(JSON.stringify(finishPayload));
     setState('thinking');
   }, []);
 

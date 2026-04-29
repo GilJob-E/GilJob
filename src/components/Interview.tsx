@@ -157,6 +157,8 @@ export default function Interview({
   const [latency, setLatency] = useState<Latency>({ vad: 0, stt: 0, vision: 0, llm: 0, tts: 0 });
   const [captureFlash, setCaptureFlash] = useState(false);
   const [hasCapturedFrame, setHasCapturedFrame] = useState(false);
+  const [streamingInterviewer, setStreamingInterviewer] = useState('');
+  const [streamingCandidate, setStreamingCandidate] = useState('');
 
   const inputAccumRef = useRef('');
   const outputAccumRef = useRef('');
@@ -171,9 +173,11 @@ export default function Interview({
     systemInstruction,
     onInputTranscript: text => {
       inputAccumRef.current += text;
+      setStreamingCandidate(prev => prev + text);
     },
     onOutputTranscript: text => {
       outputAccumRef.current += text;
+      setStreamingInterviewer(prev => prev + text);
     },
     onFirstAudio: () => {
       if (turnStartRef.current !== null) {
@@ -186,6 +190,8 @@ export default function Interview({
       const interviewerText = outputAccumRef.current.trim();
       inputAccumRef.current = '';
       outputAccumRef.current = '';
+      setStreamingCandidate('');
+      setStreamingInterviewer('');
 
       setTranscript(prev => {
         const next = [...prev];
@@ -210,6 +216,8 @@ export default function Interview({
     outputAccumRef.current = '';
     turnStartRef.current = null;
     setTranscript([]);
+    setStreamingCandidate('');
+    setStreamingInterviewer('');
     setLatency({ vad: 0, stt: 0, vision: 0, llm: 0, tts: 0 });
     setHasCapturedFrame(false);
     void session.connect();
@@ -219,9 +227,11 @@ export default function Interview({
 
   // Kick off the interview once setup completes
   useEffect(() => {
+    console.log('[interview] state=', session.state, 'kickoffSent=', kickoffSentRef.current);
     if (session.state === 'ready' && !kickoffSentRef.current) {
       kickoffSentRef.current = true;
       turnStartRef.current = Date.now();
+      console.log('[interview] sending kickoff');
       session.sendText('면접을 시작하겠습니다. 첫 번째 질문 부탁드립니다.');
     }
   }, [session.state, session]);
@@ -392,9 +402,9 @@ export default function Interview({
                 <span className="caption-up" style={{ color: 'var(--muted)' }}>{currentQ.tone}</span>
               </div>
               <p className="display-md q-text-fixed">
-                {interviewerCount === 0
-                  ? '연결 대기 중…'
-                  : transcript.filter(t => t.role === 'interviewer').slice(-1)[0]?.text ?? currentQ.text}
+                {streamingInterviewer
+                  || transcript.filter(t => t.role === 'interviewer').slice(-1)[0]?.text
+                  || (interviewerCount === 0 ? '연결 대기 중…' : currentQ.text)}
               </p>
             </div>
 
@@ -412,6 +422,18 @@ export default function Interview({
                     <p className="body-sm tr-text">{t.text}</p>
                   </div>
                 ))}
+                {streamingCandidate && (
+                  <div className="tr-row tr-candidate" style={{ opacity: 0.7 }}>
+                    <span className="caption-up tr-who">지원자 · 입력 중</span>
+                    <p className="body-sm tr-text">{streamingCandidate}</p>
+                  </div>
+                )}
+                {streamingInterviewer && transcript.length > 0 && (
+                  <div className="tr-row tr-interviewer" style={{ opacity: 0.7 }}>
+                    <span className="caption-up tr-who">면접관 · 발화 중</span>
+                    <p className="body-sm tr-text">{streamingInterviewer}</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
