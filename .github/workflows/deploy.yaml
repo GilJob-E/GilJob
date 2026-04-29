@@ -1,0 +1,40 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & Deploy to Cloudflare Workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Build (tsc + vite)
+        run: npm run build
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+          packageManager: npm
