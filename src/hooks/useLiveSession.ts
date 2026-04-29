@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 // Build marker — bump on every change so caching can be diagnosed in DevTools.
-console.log('[live build] v10 — dynamic question authoring');
+console.log('[live build] v11 — auto VAD, drop activity markers');
 import type { AudioCaptureHandle } from '../lib/audio-capture';
 import { startAudioCapture } from '../lib/audio-capture';
 import { PCMPlayer } from '../lib/pcm-player';
@@ -233,9 +233,11 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
             },
           },
           realtimeInputConfig: {
-            // Manual VAD: client signals turn boundaries via activityStart/End.
-            // Aligns with the button-driven 답변 시작/답변 종료 UX.
-            automaticActivityDetection: { disabled: true },
+            // Auto VAD owns turn boundaries. Mixing manual activityStart/End
+            // with text input on the constrained method triggers 1007
+            // "Precondition check failed", so we let the server detect speech
+            // boundaries from the audio stream itself.
+            automaticActivityDetection: { disabled: false },
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -287,9 +289,6 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     turnStartTsRef.current = Date.now();
     firstAudioFiredRef.current = false;
 
-    // Manual VAD: tell server the user is starting to speak.
-    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-
     const frame = await captureWebcamJpeg();
     if (frame && ws.readyState === WebSocket.OPEN) {
       ws.send(
@@ -321,12 +320,9 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   }, [setError]);
 
   const endTurn = useCallback(() => {
+    // Auto VAD detects end-of-speech from silence. Just stop the mic and let
+    // the server close the turn naturally; UI optimistically shows 'thinking'.
     void cleanupTurnAudio();
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      // Manual VAD end-of-turn marker.
-      ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-    }
     setState('thinking');
   }, [cleanupTurnAudio]);
 
@@ -335,14 +331,11 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     turnStartTsRef.current = Date.now();
     firstAudioFiredRef.current = false;
-    // BidiGenerateContentConstrained (ephemeral-token method) appears to only
-    // accept `realtimeInput`. Send text as a realtimeInput turn followed by
-    // activityEnd so the server treats it as a completed user utterance.
+    // realtimeInput.text alone — no activity markers needed when auto VAD
+    // is enabled. Server treats text as an immediate user turn.
     const payload = { realtimeInput: { text } };
-    const finishPayload = { realtimeInput: { activityEnd: {} } };
     console.log('[live send] realtimeInput.text', payload);
     ws.send(JSON.stringify(payload));
-    ws.send(JSON.stringify(finishPayload));
     setState('thinking');
   }, []);
 
