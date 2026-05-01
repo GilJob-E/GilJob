@@ -49,14 +49,13 @@ export default {
  * Browsers send `Origin` automatically and cannot forge it from a third-party
  * page; non-browser scrapers can spoof it but at least raise the bar.
  *
- * For dev (`wrangler dev`), allow no Origin header (curl from terminal during
- * development). Production rejects empty Origin to force browser-class clients.
+ * Strict in all environments: missing Origin → reject. wrangler.toml's
+ * `DEMO_MODE` flag governs ONLY whether mintLiveToken returns a placeholder
+ * token (used during pre-secret bootstrap), it is not a security toggle.
  */
-function isAllowedOrigin(req: Request, env: Env): boolean {
+function isAllowedOrigin(req: Request): boolean {
   const origin = req.headers.get('origin');
-  // Dev convenience: when DEMO_MODE is true (typical of local wrangler dev),
-  // empty origin is acceptable so manual curl smoke tests still work.
-  if (!origin) return env.DEMO_MODE === 'true';
+  if (!origin) return false;
   const ALLOWED = new Set([
     'https://giljob-e.bjacaun.workers.dev',
     'http://localhost:5173', // vite dev
@@ -70,7 +69,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     // Token-mint endpoints require an allow-listed Origin to keep public
     // scrapers out of the Gemini / SpatialReal billing surface.
     if (url.pathname === '/api/live-token' || url.pathname === '/api/avatarkit-token') {
-      if (!isAllowedOrigin(req, env)) return errJson('forbidden', 403);
+      if (!isAllowedOrigin(req)) return errJson('forbidden', 403);
     }
     switch (url.pathname) {
       case '/api/health':
