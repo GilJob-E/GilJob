@@ -1,4 +1,4 @@
-export type AvatarStyle = 'illustration' | 'orb' | 'geometric' | 'initial';
+export type AvatarStyle = 'illustration' | 'orb' | 'geometric' | 'initial' | 'spatialreal';
 export type OrbColor = 'mint' | 'peach' | 'lavender' | 'sky' | 'rose';
 export type Theme = 'light' | 'dark';
 export type InterviewState = 'idle' | 'listening' | 'thinking' | 'speaking';
