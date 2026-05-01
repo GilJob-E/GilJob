@@ -340,26 +340,18 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   }, [setError]);
 
   const endTurn = useCallback(() => {
-    void cleanupTurnAudio();
-    // Tell the server the user audio stream is finished so its auto-VAD
-    // doesn't keep waiting for more audio. Stopping the mic alone only halts
-    // the data flow; without this signal the server can stay in 'listening'
-    // indefinitely when the user clicks finish before the silence threshold
-    // would have triggered turn-end on its own. `audioStreamEnd` is the
-    // documented turn-boundary marker for auto-VAD mode (manual `activityEnd`
-    // would fail with 1007 Precondition since `automaticActivityDetection`
-    // is enabled).
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try {
-        const payload = { realtimeInput: { audioStreamEnd: true } };
-        console.log('[live send] audioStreamEnd', payload);
-        ws.send(JSON.stringify(payload));
-      } catch (e) {
-        console.warn('[live] failed to send audioStreamEnd', e);
-      }
-    }
+    // Auto-VAD requires a silence window to detect end-of-speech. If we cut
+    // the mic the instant the user clicks 'finish', no silence ever reaches
+    // the server — its turn timer keeps waiting and we hang in 'thinking'
+    // forever. `realtimeInput.audioStreamEnd` is unreliable in auto-VAD
+    // mode (Gemini ignores it server-side, observed 2026-05-01), so the
+    // robust fix is to keep the mic open a bit longer so the user's natural
+    // tail-silence is streamed and auto-VAD can fire normally.
     setState('thinking');
+    const SILENCE_TAIL_MS = 700;
+    setTimeout(() => {
+      void cleanupTurnAudio();
+    }, SILENCE_TAIL_MS);
   }, [cleanupTurnAudio]);
 
   const sendText = useCallback((text: string) => {
