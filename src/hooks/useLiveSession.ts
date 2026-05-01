@@ -340,9 +340,25 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   }, [setError]);
 
   const endTurn = useCallback(() => {
-    // Auto VAD detects end-of-speech from silence. Just stop the mic and let
-    // the server close the turn naturally; UI optimistically shows 'thinking'.
     void cleanupTurnAudio();
+    // Tell the server the user audio stream is finished so its auto-VAD
+    // doesn't keep waiting for more audio. Stopping the mic alone only halts
+    // the data flow; without this signal the server can stay in 'listening'
+    // indefinitely when the user clicks finish before the silence threshold
+    // would have triggered turn-end on its own. `audioStreamEnd` is the
+    // documented turn-boundary marker for auto-VAD mode (manual `activityEnd`
+    // would fail with 1007 Precondition since `automaticActivityDetection`
+    // is enabled).
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        const payload = { realtimeInput: { audioStreamEnd: true } };
+        console.log('[live send] audioStreamEnd', payload);
+        ws.send(JSON.stringify(payload));
+      } catch (e) {
+        console.warn('[live] failed to send audioStreamEnd', e);
+      }
+    }
     setState('thinking');
   }, [cleanupTurnAudio]);
 
