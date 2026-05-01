@@ -24,6 +24,14 @@ export interface UseLiveSessionOptions {
   onTurnComplete?: () => void;
   onFirstAudio?: () => void;
   onError?: (err: string) => void;
+  /**
+   * Optional fan-out for the raw 24kHz Int16 base64 PCM chunks the server
+   * emits. When set, the consumer takes ownership of audio playback and the
+   * built-in `PCMPlayer.enqueue` is bypassed to avoid double-playback (echo).
+   * Used by the SpatialReal spike to forward audio to the avatar SDK so it can
+   * render lip-sync from the same stream.
+   */
+  onPcmChunk?: (b64: string) => void;
 }
 
 export interface LiveSessionApi {
@@ -148,7 +156,19 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
           firstAudioFiredRef.current = true;
           optsRef.current.onFirstAudio?.();
         }
-        playerRef.current?.enqueue(p.inlineData.data);
+        const consumer = optsRef.current.onPcmChunk;
+        if (consumer) {
+          // Caller owns playback (e.g. SpatialReal SDK). Bypass PCMPlayer
+          // to prevent double-playback / echo. Isolate handler throws so a
+          // bad consumer can't break the Gemini message loop.
+          try {
+            consumer(p.inlineData.data);
+          } catch (err) {
+            console.warn('[live] onPcmChunk handler threw (isolated)', err);
+          }
+        } else {
+          playerRef.current?.enqueue(p.inlineData.data);
+        }
         setState('speaking');
       }
       // Text parts: treat as output transcript so the UI shows them even if

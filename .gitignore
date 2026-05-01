@@ -10,3 +10,9 @@ dist/
 .vite/
 *.tsbuildinfo
 *.log
+
+# SpatialReal spike (feat/spatialreal-spike branch — local artifacts only, never commit)
+spike-*.png
+spike-*.mov
+spike-*.txt
+spatialreal-llms.txt
