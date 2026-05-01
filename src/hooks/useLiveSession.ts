@@ -257,7 +257,14 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
             // with text input on the constrained method triggers 1007
             // "Precondition check failed", so we let the server detect speech
             // boundaries from the audio stream itself.
-            automaticActivityDetection: { disabled: false },
+            // `silenceDurationMs` shortens the silence threshold so a manual
+            // record-button user (who streams a short tail of ambient silence
+            // on stop) gets turn-end detection within ~1s instead of the
+            // default ~2-3s, which previously hung in 'thinking'.
+            automaticActivityDetection: {
+              disabled: false,
+              silenceDurationMs: 800,
+            },
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -348,7 +355,10 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     // robust fix is to keep the mic open a bit longer so the user's natural
     // tail-silence is streamed and auto-VAD can fire normally.
     setState('thinking');
-    const SILENCE_TAIL_MS = 700;
+    // 1.5s silence tail + server-side silenceDurationMs=800 (see setup
+    // envelope) gives auto-VAD a comfortable window to fire turn-end without
+    // making the click-to-finish UX feel laggy.
+    const SILENCE_TAIL_MS = 1500;
     setTimeout(() => {
       void cleanupTurnAudio();
     }, SILENCE_TAIL_MS);
