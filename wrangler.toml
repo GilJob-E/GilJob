@@ -16,3 +16,12 @@ DEMO_MODE = "true"
 #
 # Optional override:
 #   GEMINI_LIVE_MODEL  — default `gemini-2.0-flash-live-001`
+#
+# SpatialReal AvatarKit (3D interviewer avatar):
+#   SPATIALREAL_APP_ID         — App ID from Studio dashboard
+#   SPATIALREAL_API_KEY        — API Key (reserved for vendor mint endpoint)
+#   SPATIALREAL_AVATAR_ID      — Public avatar ID (not secret, but stored as
+#                                secret for parity with other vars)
+#   SPATIALREAL_SESSION_TOKEN  — Manually-rotated session token (max 1h
+#                                validity). Vendor mint endpoint TBD; rotate
+#                                via `wrangler secret put` every ~50 minutes.

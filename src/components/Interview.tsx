@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Avatar from './Avatar';
+import SpatialAvatar, { type SpatialAvatarHandle } from './SpatialAvatar';
 import { useLiveSession, type SessionState } from '../hooks/useLiveSession';
 import { buildSystemInstruction } from '../lib/system-instruction';
 import type {
@@ -166,6 +167,7 @@ export default function Interview({
   const kickoffSentRef = useRef(false);
   const completedRef = useRef(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const spatialAvatarRef = useRef<SpatialAvatarHandle | null>(null);
 
   const systemInstruction = useMemo(() => buildSystemInstruction(persona), [persona]);
 
@@ -185,7 +187,25 @@ export default function Interview({
         setLatency(l => ({ ...l, llm: ttft }));
       }
     },
+    // Forward Gemini's 24kHz Int16 PCM to SpatialReal ONLY when the 3D avatar
+    // is the active style. Defining `onPcmChunk` bypasses useLiveSession's
+    // PCMPlayer (to avoid echo with the SDK's own playback). When the avatar
+    // is a legacy SVG style, we leave `onPcmChunk` undefined so PCMPlayer
+    // handles audio normally — without this guard, switching to an SVG style
+    // would silently break audio (consumer set + ref null = sink to nowhere).
+    onPcmChunk:
+      avatarStyle === 'spatialreal'
+        ? b64 => {
+            spatialAvatarRef.current?.pushPcm(b64);
+          }
+        : undefined,
     onTurnComplete: () => {
+      // Drain animation frames on the avatar SDK if the spatialreal style is
+      // active. No-op for SVG styles (ref is null + we didn't fork audio).
+      if (avatarStyle === 'spatialreal') {
+        spatialAvatarRef.current?.endRound();
+      }
+
       const candidateText = inputAccumRef.current.trim();
       const interviewerText = outputAccumRef.current.trim();
       inputAccumRef.current = '';
@@ -337,7 +357,11 @@ export default function Interview({
                 <StateBadge state={effectiveState} />
               </div>
               <div className="avatar-wrap-fixed">
-                <Avatar style={avatarStyle} state={effectiveState} orbColor={orbColor} />
+                {avatarStyle === 'spatialreal' ? (
+                  <SpatialAvatar ref={spatialAvatarRef} />
+                ) : (
+                  <Avatar style={avatarStyle} state={effectiveState} orbColor={orbColor} />
+                )}
               </div>
             </div>
             <div className="iv-controls">
