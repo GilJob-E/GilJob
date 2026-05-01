@@ -123,6 +123,39 @@ const SpatialAvatar = forwardRef<SpatialAvatarHandle, { className?: string }>(
             if (!cancelled) setError(`${err.code}: ${err.message}`);
           };
 
+          // CRITICAL: `controller.start()` resolves before the SDK's internal
+          // WebSocket session reaches the `connected` state. If we send audio
+          // between start()-resolve and connection-state="connected", the SDK
+          // logs `Session not configured yet, skipping audio send`, treats the
+          // first chunk as empty animation, and enters a permanent fallback
+          // mode that ignores all subsequent animation. Use the connection-
+          // state callback as the real readiness gate, not start()'s promise.
+          view.controller.onConnectionState = (state: string) => {
+            console.log('[spatialavatar] connection', state);
+            if (cancelled) return;
+            if (state === 'connected' && !startedRef.current) {
+              startedRef.current = true;
+              setLoading(false);
+              // Drain queued chunks that arrived during init. Preserves first
+              // turn audio that was forwarded before the SDK was ready.
+              const pending = pendingChunksRef.current;
+              pendingChunksRef.current = [];
+              for (const b64 of pending) {
+                try {
+                  view.controller.send(base64ToArrayBuffer(b64), false);
+                } catch (e) {
+                  console.warn('[spatialavatar] drain pushPcm failed', e);
+                }
+              }
+            } else if (state === 'failed') {
+              setError('avatar connection failed');
+              setLoading(false);
+            }
+          };
+          view.controller.onConversationState = (state: string) => {
+            console.log('[spatialavatar] conversation', state);
+          };
+
           // initializeAudioContext must be inside a user gesture. Mounting
           // directly after the user clicks "면접 시작하기" usually keeps the
           // gesture window open across the React commit; if a browser rejects
@@ -131,22 +164,8 @@ const SpatialAvatar = forwardRef<SpatialAvatarHandle, { className?: string }>(
           if (cancelled) return;
           await view.controller.start();
           if (cancelled) return;
-
-          startedRef.current = true;
-          setLoading(false);
-
-          // Drain queued chunks that arrived during init. This prevents the
-          // first interviewer turn from being silent on cold loads.
-          const pending = pendingChunksRef.current;
-          pendingChunksRef.current = [];
-          for (const b64 of pending) {
-            try {
-              const buf = base64ToArrayBuffer(b64);
-              view.controller.send(buf, false);
-            } catch (e) {
-              console.warn('[spatialavatar] drain pushPcm failed', e);
-            }
-          }
+          // Note: do NOT set startedRef here — onConnectionState handler does
+          // it once the underlying session is actually ready to accept audio.
         } catch (e) {
           if (cancelled) return;
           const msg = e instanceof Error ? e.message : String(e);
