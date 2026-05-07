@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-// Build marker — bump on every change so caching can be diagnosed in DevTools.
-console.log('[live build] v11 — auto VAD, drop activity markers');
+// Build marker — git short SHA injected by Vite `define` (see vite.config.ts).
+// Auto-bumps on every commit so caching / stale-bundle issues are unambiguous
+// in DevTools. Replaces the manual `v11`-style marker that survived a revert.
+console.log('[live build]', __BUILD_SHA__);
 import type { AudioCaptureHandle } from '../lib/audio-capture';
 import { startAudioCapture } from '../lib/audio-capture';
 import { PCMPlayer } from '../lib/pcm-player';
@@ -41,16 +43,13 @@ export interface LiveSessionApi {
   disconnect: () => void;
   startTurn: () => Promise<void>;
   endTurn: () => void;
-  /** Send a text-only client turn (used to kick off the first interviewer question). */
+  /** Send a text-only client turn. Path B note: avoid mixing with manual VAD — server may
+   *  treat text + manual activity as a precondition violation (1007), even on Unconstrained. */
   sendText: (text: string) => void;
-}
-
-interface LiveTokenResponse {
-  ok: boolean;
-  demo: boolean;
-  token: string;
-  model: string;
-  expireTime: string;
+  /** Kickoff: send a zero-content user turn (activityStart + 100ms silent PCM + activityEnd)
+   *  so the model emits the systemInstruction-directed first interviewer utterance without
+   *  text input contaminating the session. */
+  sendKickoff: () => void;
 }
 
 interface ServerMessage {
@@ -122,15 +121,16 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     // stays readable across multi-turn sessions.
     if (typeof console !== 'undefined') {
       const sc = msg.serverContent;
-      const hasTranscript = !!(sc?.inputTranscription?.text || sc?.outputTranscription?.text);
+      // Log only state-machine-significant events. Streaming transcript
+      // chunks (input/outputTranscription.text) fire 20-30x per turn and
+      // flood the console without diagnostic value — drop them. Full
+      // transcript still accumulates via the onInputTranscript /
+      // onOutputTranscript callbacks below.
       const hasBoundary = !!(sc?.turnComplete || sc?.generationComplete || sc?.interrupted);
-      const hasText = !!sc?.modelTurn?.parts?.some(p => p.text);
-      const interesting = msg.setupComplete || msg.goAway || hasTranscript || hasBoundary || hasText;
+      const interesting = msg.setupComplete || msg.goAway || hasBoundary;
       if (interesting) {
         const debug: Record<string, unknown> = {};
         if (msg.setupComplete) debug.setupComplete = true;
-        if (sc?.inputTranscription?.text) debug.inputTranscript = sc.inputTranscription.text;
-        if (sc?.outputTranscription?.text) debug.outputTranscript = sc.outputTranscription.text;
         if (sc?.generationComplete) debug.generationComplete = true;
         if (sc?.turnComplete) debug.turnComplete = true;
         if (sc?.interrupted) debug.interrupted = true;
@@ -199,35 +199,17 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     setState('connecting');
     setLastError(null);
 
-    let tokenData: LiveTokenResponse;
-    try {
-      const r = await fetch('/api/live-token', { method: 'POST' });
-      if (!r.ok) throw new Error(`token fetch ${r.status}`);
-      tokenData = (await r.json()) as LiveTokenResponse;
-    } catch (e) {
-      setError(`token: ${(e as Error).message}`);
-      return;
-    }
-
-    if (!tokenData.ok || !tokenData.token) {
-      setError('token missing in response');
-      return;
-    }
-
-    if (tokenData.demo || tokenData.token === 'DEMO_TOKEN_NO_REAL_API') {
-      setError('GEMINI_API_KEY 미설정 (서버 DEMO_MODE). wrangler secret put GEMINI_API_KEY 후 재배포 필요.');
-      return;
-    }
-
     setupCompleteRef.current = false;
 
-    // Ephemeral tokens (auth_tokens/...) are minted under v1alpha and the
-    // method is `BidiGenerateContentConstrained` (not BidiGenerateContent).
-    // Per @google/genai SDK convention: token prefix triggers v1alpha and the
-    // constrained method; auth via ?access_token=.
-    const url =
-      `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained` +
-      `?access_token=${encodeURIComponent(tokenData.token)}`;
+    // Path B: connect to worker WS bridge. Worker holds GEMINI_API_KEY and
+    // proxies to Gemini `v1beta.BidiGenerateContent` (Unconstrained), which
+    // is the only method that accepts manual VAD activity markers without
+    // 1007 — the entire reason for this architecture. Same-origin gate on
+    // `/api/live-ws` is the auth boundary; no client-side token needed.
+    // `mintLiveToken` (`/api/live-token`) is retained ONLY for hybrid backward
+    // compat during transition; not used here.
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${wsProtocol}//${window.location.host}/api/live-ws`;
 
     let ws: WebSocket;
     try {
@@ -242,7 +224,11 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     ws.onopen = () => {
       const setup = {
         setup: {
-          model: `models/${tokenData.model}`,
+          // Auto-kickoff and audio behavior verified for this model on
+          // 2026-05-08 (.omc/spikes/manual-vad-b-option-2026-05-08.md).
+          // Model bumps require re-verification of AC-1/AC-3/AC-5 — see
+          // .omc/plans/worker-ws-proxy-b-option.md model-bump checkbox.
+          model: 'models/gemini-3.1-flash-live-preview',
           systemInstruction: {
             parts: [{ text: optsRef.current.systemInstruction }],
           },
@@ -253,18 +239,10 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
             },
           },
           realtimeInputConfig: {
-            // Auto VAD owns turn boundaries. Mixing manual activityStart/End
-            // with text input on the constrained method triggers 1007
-            // "Precondition check failed", so we let the server detect speech
-            // boundaries from the audio stream itself.
-            // `silenceDurationMs` shortens the silence threshold so a manual
-            // record-button user (who streams a short tail of ambient silence
-            // on stop) gets turn-end detection within ~1s instead of the
-            // default ~2-3s, which previously hung in 'thinking'.
-            automaticActivityDetection: {
-              disabled: false,
-              silenceDurationMs: 800,
-            },
+            // Manual VAD: client owns turn boundaries via activityStart/End
+            // (sent in startTurn / endTurn). Unconstrained method accepts
+            // this where Constrained rejects with 1007.
+            automaticActivityDetection: { disabled: true },
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -316,6 +294,11 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     turnStartTsRef.current = Date.now();
     firstAudioFiredRef.current = false;
 
+    // Manual VAD: explicit start-of-user-turn marker. The model treats the
+    // window between this and the matching activityEnd in endTurn() as one
+    // user turn, regardless of audio silences within.
+    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+
     const frame = await captureWebcamJpeg();
     if (frame && ws.readyState === WebSocket.OPEN) {
       ws.send(
@@ -347,21 +330,15 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   }, [setError]);
 
   const endTurn = useCallback(() => {
-    // Auto-VAD requires a silence window to detect end-of-speech. If we cut
-    // the mic the instant the user clicks 'finish', no silence ever reaches
-    // the server — its turn timer keeps waiting and we hang in 'thinking'
-    // forever. `realtimeInput.audioStreamEnd` is unreliable in auto-VAD
-    // mode (Gemini ignores it server-side, observed 2026-05-01), so the
-    // robust fix is to keep the mic open a bit longer so the user's natural
-    // tail-silence is streamed and auto-VAD can fire normally.
+    // Manual VAD: button click is the authoritative end-of-turn signal.
+    // No silence tail / no server-side VAD threshold tuning — we just tell
+    // the server "this user turn is done" and immediately cut the mic.
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+    }
     setState('thinking');
-    // 1.5s silence tail + server-side silenceDurationMs=800 (see setup
-    // envelope) gives auto-VAD a comfortable window to fire turn-end without
-    // making the click-to-finish UX feel laggy.
-    const SILENCE_TAIL_MS = 1500;
-    setTimeout(() => {
-      void cleanupTurnAudio();
-    }, SILENCE_TAIL_MS);
+    void cleanupTurnAudio();
   }, [cleanupTurnAudio]);
 
   const sendText = useCallback((text: string) => {
@@ -369,11 +346,39 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     turnStartTsRef.current = Date.now();
     firstAudioFiredRef.current = false;
-    // realtimeInput.text alone — no activity markers needed when auto VAD
-    // is enabled. Server treats text as an immediate user turn.
+    // realtimeInput.text alone. Path B caveat: do NOT mix with manual VAD
+    // markers in the same session — server treats it as a precondition
+    // violation and closes 1007 even on Unconstrained method.
     const payload = { realtimeInput: { text } };
     console.log('[live send] realtimeInput.text', payload);
     ws.send(JSON.stringify(payload));
+    setState('thinking');
+  }, []);
+
+  const sendKickoff = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    turnStartTsRef.current = Date.now();
+    firstAudioFiredRef.current = false;
+    // Manual VAD kickoff: send a zero-content user turn so the model
+    // responds with the systemInstruction-directed first utterance. Text
+    // input is intentionally avoided — mixing text + manual activity in the
+    // same session triggers 1007 (observed empirically on Unconstrained too,
+    // not just Constrained as the original code comment suggested).
+    //
+    // 100ms silent PCM at 16kHz mono int16 = 3200 bytes of zeros. The audio
+    // matters: empty activity-pair without any audio bytes is also rejected.
+    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+    const silent = new Uint8Array(3200);
+    let bin = '';
+    for (let i = 0; i < silent.length; i++) bin += String.fromCharCode(silent[i]);
+    const b64 = btoa(bin);
+    ws.send(
+      JSON.stringify({
+        realtimeInput: { audio: { mimeType: 'audio/pcm;rate=16000', data: b64 } },
+      }),
+    );
+    ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
     setState('thinking');
   }, []);
 
@@ -392,5 +397,6 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     startTurn,
     endTurn,
     sendText,
+    sendKickoff,
   };
 }

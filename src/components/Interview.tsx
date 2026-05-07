@@ -165,6 +165,11 @@ export default function Interview({
   const outputAccumRef = useRef('');
   const turnStartRef = useRef<number | null>(null);
   const kickoffSentRef = useRef(false);
+  // True from sendKickoff() until that turn's onTurnComplete fires. Gemini
+  // STT can hallucinate Korean filler ("그는 그가 한 말을 후회했다.") from
+  // the 100ms silent PCM the kickoff sends, so we drop input transcript on
+  // the kickoff turn rather than letting it surface as a candidate utterance.
+  const kickoffPendingRef = useRef(false);
   const completedRef = useRef(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const spatialAvatarRef = useRef<SpatialAvatarHandle | null>(null);
@@ -174,6 +179,7 @@ export default function Interview({
   const session = useLiveSession({
     systemInstruction,
     onInputTranscript: text => {
+      if (kickoffPendingRef.current) return;
       inputAccumRef.current += text;
       setStreamingCandidate(prev => prev + text);
     },
@@ -206,7 +212,10 @@ export default function Interview({
         spatialAvatarRef.current?.endRound();
       }
 
-      const candidateText = inputAccumRef.current.trim();
+      const wasKickoff = kickoffPendingRef.current;
+      kickoffPendingRef.current = false;
+
+      const candidateText = wasKickoff ? '' : inputAccumRef.current.trim();
       const interviewerText = outputAccumRef.current.trim();
       inputAccumRef.current = '';
       outputAccumRef.current = '';
@@ -231,6 +240,7 @@ export default function Interview({
   // Connect on mount + every persona change
   useEffect(() => {
     kickoffSentRef.current = false;
+    kickoffPendingRef.current = false;
     completedRef.current = false;
     inputAccumRef.current = '';
     outputAccumRef.current = '';
@@ -245,14 +255,17 @@ export default function Interview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persona.id]);
 
-  // Kick off the interview once setup completes
+  // Kick off the interview once setup completes. Path B uses sendKickoff
+  // (manual VAD zero-content turn) instead of sendText so text input does
+  // not contaminate a manual-VAD session and trigger 1007 mid-interview.
   useEffect(() => {
     console.log('[interview] state=', session.state, 'kickoffSent=', kickoffSentRef.current);
     if (session.state === 'ready' && !kickoffSentRef.current) {
       kickoffSentRef.current = true;
+      kickoffPendingRef.current = true;
       turnStartRef.current = Date.now();
-      console.log('[interview] sending kickoff');
-      session.sendText('면접을 시작하겠습니다. 첫 번째 질문 부탁드립니다.');
+      console.log('[interview] sending kickoff (manual VAD)');
+      session.sendKickoff();
     }
   }, [session.state, session]);
 
@@ -263,25 +276,27 @@ export default function Interview({
     }
   }, [transcript]);
 
-  // Detect interview completion: final candidate answer + closing interviewer turn.
-  // Gate on interviewerCount > candidateCount so the closing remark is captured.
+  // Detect interview completion. Happy path: final candidate answer + closing
+  // interviewer remark. Fallback: model may skip closing or veer into a 6th
+  // question; if state stays 'ready' for 12s after the final answer we
+  // force-complete with the current transcript. If the user starts another
+  // turn (state leaves 'ready'), the timer is cancelled.
   useEffect(() => {
+    if (completedRef.current) return;
     const candidateCount = transcript.filter(t => t.role === 'candidate').length;
     const interviewerCount = transcript.filter(t => t.role === 'interviewer').length;
-    if (
-      candidateCount >= persona.questions.length &&
-      interviewerCount > candidateCount &&
-      !completedRef.current &&
-      session.state === 'ready'
-    ) {
+    if (candidateCount < persona.questions.length) return;
+    if (session.state !== 'ready') return;
+
+    const haveClosing = interviewerCount > candidateCount;
+    const delay = haveClosing ? 1200 : 12000;
+    const snapshot = [...transcript];
+    const t = setTimeout(() => {
+      if (completedRef.current) return;
       completedRef.current = true;
-      const snapshot = [...transcript];
-      const t = setTimeout(() => {
-        onComplete({ transcript: snapshot, latency, persona });
-      }, 1200);
-      return () => clearTimeout(t);
-    }
-    return;
+      onComplete({ transcript: snapshot, latency, persona });
+    }, delay);
+    return () => clearTimeout(t);
   }, [transcript, persona.questions.length, session.state, latency, persona, onComplete]);
 
   const effectiveState: InterviewState =

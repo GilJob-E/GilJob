@@ -65,3 +65,19 @@
 - 큐 컨슈머는 **멱등성(idempotent)** 보장 — 재시도 시 부작용 없어야 함.
 - API 요청/응답은 **Zod schema**로 검증. 클라/서버 모두 타입 일관.
 - React 컴포넌트는 **함수형 + hooks**만 사용. class component 금지.
+
+## Live API Turn-End Architecture (in flight, 2026-05-08)
+
+면접 turn boundary가 두 갈래로 진화 중. 현재 production main은 hybrid(`a6cb6ce`/`b8f93d5`), spike branch에서 manual VAD via worker WS proxy 검증 통과 후 Day 3 verification 진행 중.
+
+- **Production (main, hybrid)**: client → Gemini 직통 WS, `BidiGenerateContentConstrained` (v1alpha + ephemeral token), auto-VAD + 1.5s mic tail. 조용한 환경에서 안정적, ~2.3s 응답 latency.
+- **Path B (spike, manual VAD)**: `feat/worker-ws-proxy-spike` 브랜치. client → worker `/api/live-ws` → Gemini `BidiGenerateContent` (v1beta + API key). manual VAD `disabled: true` + activityStart/End. 빠른 응답 + 코드 단순화 목표. Day 1 PASS, Day 2 구현 완료, Day 3 AC verification 진행.
+
+핵심 invariant (잊으면 사고):
+
+1. **text + manual activity = 1007 (모든 메서드)** — Constrained 전용 제약이라 알려졌지만 Unconstrained도 동일. manual-VAD 세션에선 `sendText` 호출 절대 X. 대신 `sendKickoff` (zero-content user turn = activityStart + 100ms 무음 + activityEnd) 사용.
+2. **Constrained는 manual VAD 자체 거부** — ephemeral token 경로 → Constrained 강제 → manual activity 마커 송신 시 1007 close. Unconstrained로 가려면 worker가 API key 들고 직접 connect.
+3. **Miniflare(local wrangler dev)는 `fetch({Upgrade: 'websocket'})` outbound 거부** — `new WebSocket()` 사용 강제 (production CF runtime + local 둘 다 작동).
+4. **Worker WS bridge는 client→upstream 메시지 버퍼링 필수** — upstream 연결 전 client setup envelope 도착하면 dropped. `pendingToUpstream` 큐로 누적 후 upstream open 시 drain.
+
+자세한 invariant + debugging은 `src/hooks/CLAUDE.md`, `worker/CLAUDE.md` 참조.
