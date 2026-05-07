@@ -253,14 +253,18 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
             },
           },
           realtimeInputConfig: {
-            // Manual VAD: client owns turn boundaries via activityStart/End.
-            // Auto VAD silenceDurationMs is gone — button click is authoritative.
-            // Auto-kickoff (server emits first interviewer turn from
-            // systemInstruction without client-side text input) is verified for
-            // gemini-3.1-flash-live-preview as of 2026-05-07. Model bumps
-            // require re-verification — see .omc/plans/manual-vad-migration.md
-            // AC-5 and the model-bump checkbox in the corresponding PR.
-            automaticActivityDetection: { disabled: true },
+            // Auto VAD owns turn boundaries. Mixing manual activityStart/End
+            // with text input on the constrained method triggers 1007
+            // "Precondition check failed", so we let the server detect speech
+            // boundaries from the audio stream itself.
+            // `silenceDurationMs` shortens the silence threshold so a manual
+            // record-button user (who streams a short tail of ambient silence
+            // on stop) gets turn-end detection within ~1s instead of the
+            // default ~2-3s, which previously hung in 'thinking'.
+            automaticActivityDetection: {
+              disabled: false,
+              silenceDurationMs: 800,
+            },
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -312,8 +316,6 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     turnStartTsRef.current = Date.now();
     firstAudioFiredRef.current = false;
 
-    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-
     const frame = await captureWebcamJpeg();
     if (frame && ws.readyState === WebSocket.OPEN) {
       ws.send(
@@ -345,25 +347,34 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   }, [setError]);
 
   const endTurn = useCallback(() => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-    }
+    // Auto-VAD requires a silence window to detect end-of-speech. If we cut
+    // the mic the instant the user clicks 'finish', no silence ever reaches
+    // the server — its turn timer keeps waiting and we hang in 'thinking'
+    // forever. `realtimeInput.audioStreamEnd` is unreliable in auto-VAD
+    // mode (Gemini ignores it server-side, observed 2026-05-01), so the
+    // robust fix is to keep the mic open a bit longer so the user's natural
+    // tail-silence is streamed and auto-VAD can fire normally.
     setState('thinking');
-    void cleanupTurnAudio();
+    // 1.5s silence tail + server-side silenceDurationMs=800 (see setup
+    // envelope) gives auto-VAD a comfortable window to fire turn-end without
+    // making the click-to-finish UX feel laggy.
+    const SILENCE_TAIL_MS = 1500;
+    setTimeout(() => {
+      void cleanupTurnAudio();
+    }, SILENCE_TAIL_MS);
   }, [cleanupTurnAudio]);
 
   const sendText = useCallback((text: string) => {
-    // Manual VAD migration locks this codebase out of text input on the
-    // Constrained method (text + manual activity = 1007 Precondition fail).
-    // Throw loudly so any future caller cannot silently regress us.
-    // To re-enable text input, migrate to Unconstrained via worker WS proxy
-    // (B-option, see .omc/plans/manual-vad-migration.md §6 follow-ups).
-    throw new Error(
-      `[useLiveSession] sendText is incompatible with manual VAD on Constrained method (1007). ` +
-        `Migrate to Unconstrained via worker WS proxy to re-enable text input. ` +
-        `Attempted text: ${text.slice(0, 40)}`,
-    );
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    turnStartTsRef.current = Date.now();
+    firstAudioFiredRef.current = false;
+    // realtimeInput.text alone — no activity markers needed when auto VAD
+    // is enabled. Server treats text as an immediate user turn.
+    const payload = { realtimeInput: { text } };
+    console.log('[live send] realtimeInput.text', payload);
+    ws.send(JSON.stringify(payload));
+    setState('thinking');
   }, []);
 
   useEffect(
