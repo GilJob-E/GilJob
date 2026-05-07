@@ -164,7 +164,7 @@ export default function Interview({
   const inputAccumRef = useRef('');
   const outputAccumRef = useRef('');
   const turnStartRef = useRef<number | null>(null);
-  const kickoffPokeSentRef = useRef(false);
+  const kickoffSentRef = useRef(false);
   const completedRef = useRef(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const spatialAvatarRef = useRef<SpatialAvatarHandle | null>(null);
@@ -230,8 +230,8 @@ export default function Interview({
 
   // Connect on mount + every persona change
   useEffect(() => {
+    kickoffSentRef.current = false;
     completedRef.current = false;
-    kickoffPokeSentRef.current = false;
     inputAccumRef.current = '';
     outputAccumRef.current = '';
     turnStartRef.current = null;
@@ -245,14 +245,14 @@ export default function Interview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persona.id]);
 
-  // Kickoff poke: server doesn't auto-emit a first turn from systemInstruction
-  // alone — needs a user-turn event. Empty activityStart/End pair gives it a
-  // zero-length user turn to respond to (text input would re-trigger 1007).
+  // Kick off the interview once setup completes
   useEffect(() => {
-    if (session.state === 'ready' && !kickoffPokeSentRef.current) {
-      kickoffPokeSentRef.current = true;
+    console.log('[interview] state=', session.state, 'kickoffSent=', kickoffSentRef.current);
+    if (session.state === 'ready' && !kickoffSentRef.current) {
+      kickoffSentRef.current = true;
       turnStartRef.current = Date.now();
-      session.sendEmptyTurn();
+      console.log('[interview] sending kickoff');
+      session.sendText('면접을 시작하겠습니다. 첫 번째 질문 부탁드립니다.');
     }
   }, [session.state, session]);
 
@@ -307,11 +307,7 @@ export default function Interview({
   const turnIdx = Math.min(Math.max(0, interviewerCount - 1), persona.questions.length - 1);
   const currentQ = persona.questions[turnIdx] ?? persona.questions[0];
 
-  // Manual VAD: server auto-emits the first interviewer turn from
-  // systemInstruction, so the user must wait for that before answering.
-  // Gate on interviewerCount > 0 to differentiate "ready, kickoff pending"
-  // from "ready, awaiting user answer."
-  const isReadyForAnswer = session.state === 'ready' && !completedRef.current && interviewerCount > 0;
+  const isReadyForAnswer = session.state === 'ready' && !completedRef.current;
   const isConnecting = session.state === 'connecting' || session.state === 'idle';
   const isError = session.state === 'error';
 
@@ -411,8 +407,8 @@ export default function Interview({
                   <span style={{ color: 'var(--error)' }}>오류: {session.lastError}</span>
                 )}
                 {!isError && isConnecting && 'Gemini Live API에 연결 중…'}
-                {!isError && session.state === 'ready' && interviewerCount === 0 && !completedRef.current && '세션 준비, 첫 질문 대기 중…'}
-                {!isError && isReadyForAnswer && 'Space 또는 버튼을 눌러 답변을 시작하세요.'}
+                {!isError && session.state === 'ready' && !kickoffSentRef.current && '세션 준비됨, 첫 질문 요청 중…'}
+                {!isError && isReadyForAnswer && kickoffSentRef.current && 'Space 또는 버튼을 눌러 답변을 시작하세요.'}
                 {session.state === 'listening' && '발화 중. 영상 1프레임은 시작 시 캡처됨.'}
                 {session.state === 'thinking' && 'Live API가 답변과 영상을 분석 중.'}
                 {session.state === 'speaking' && '면접관이 다음 질문을 음성으로 전달 중.'}
