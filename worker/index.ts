@@ -1,15 +1,19 @@
 /**
- * GilJob-E Worker — single deploy, serves SPA + /api/live-token.
+ * GilJob-E Worker — single deploy, serves SPA + /api/live-token + /api/live-ws.
  *
- * Frontend gets a one-shot ephemeral token here, then opens a WebSocket
- * directly to Gemini Live API. Worker never proxies the WebSocket itself,
- * keeping the cloud bridge thin.
+ * Frontend has two paths:
+ *  - hybrid (current production): worker mints ephemeral token via /api/live-token,
+ *    client opens direct WS to Gemini Live (Constrained method, auto-VAD).
+ *  - B-option (Day 1 spike feature): worker WS-proxies through /api/live-ws to
+ *    Gemini Live Unconstrained method, enabling manual VAD turn boundaries.
  *
  * Required secret: GEMINI_API_KEY (wrangler secret put GEMINI_API_KEY)
  *
  * For pre-API smoke (no key set), DEMO_MODE=true short-circuits live-token
  * with a placeholder so the SPA still loads end-to-end.
  */
+
+import { handleWsBridge } from './ws-bridge';
 
 export interface Env {
   ASSETS: Fetcher;
@@ -66,9 +70,13 @@ function isAllowedOrigin(req: Request): boolean {
 
 async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
   try {
-    // Token-mint endpoints require an allow-listed Origin to keep public
-    // scrapers out of the Gemini / SpatialReal billing surface.
-    if (url.pathname === '/api/live-token' || url.pathname === '/api/avatarkit-token') {
+    // Token-mint and WS-bridge endpoints require an allow-listed Origin to
+    // keep public scrapers out of the Gemini / SpatialReal billing surface.
+    if (
+      url.pathname === '/api/live-token' ||
+      url.pathname === '/api/avatarkit-token' ||
+      url.pathname === '/api/live-ws'
+    ) {
       if (!isAllowedOrigin(req)) return errJson('forbidden', 403);
     }
     switch (url.pathname) {
@@ -86,6 +94,9 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
       case '/api/avatarkit-token':
         if (req.method !== 'POST') return errJson('POST required', 405);
         return mintAvatarKitToken(env);
+      case '/api/live-ws':
+        if (!env.GEMINI_API_KEY) return errJson('GEMINI_API_KEY not set', 503);
+        return handleWsBridge(req, env.GEMINI_API_KEY);
       default:
         return errJson('not found', 404);
     }
@@ -193,3 +204,4 @@ async function mintAvatarKitToken(env: Env): Promise<Response> {
     expiresIn: 3600,
   });
 }
+
