@@ -41,10 +41,8 @@ export interface LiveSessionApi {
   disconnect: () => void;
   startTurn: () => Promise<void>;
   endTurn: () => void;
-  /** Throws — text input is incompatible with manual VAD on the Constrained method (1007). */
+  /** Send a text-only client turn (used to kick off the first interviewer question). */
   sendText: (text: string) => void;
-  /** Send an empty activityStart/End pair so the server emits the first interviewer turn. */
-  sendEmptyTurn: () => void;
 }
 
 interface LiveTokenResponse {
@@ -368,19 +366,6 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     );
   }, []);
 
-  const sendEmptyTurn = useCallback(() => {
-    // Kickoff poke: systemInstruction alone does NOT make the model emit a
-    // first turn — the server waits for a user turn event. We send an empty
-    // activityStart/End pair so the server treats it as a zero-length user
-    // turn and responds with the systemInstruction-directed first utterance.
-    // No audio bytes, no text — those would re-trigger 1007 with manual VAD.
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
-    ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
-    setState('thinking');
-  }, []);
-
   useEffect(
     () => () => {
       disconnect();
@@ -396,6 +381,5 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     startTurn,
     endTurn,
     sendText,
-    sendEmptyTurn,
   };
 }

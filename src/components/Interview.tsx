@@ -164,7 +164,6 @@ export default function Interview({
   const inputAccumRef = useRef('');
   const outputAccumRef = useRef('');
   const turnStartRef = useRef<number | null>(null);
-  const kickoffPokeSentRef = useRef(false);
   const completedRef = useRef(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const spatialAvatarRef = useRef<SpatialAvatarHandle | null>(null);
@@ -231,7 +230,6 @@ export default function Interview({
   // Connect on mount + every persona change
   useEffect(() => {
     completedRef.current = false;
-    kickoffPokeSentRef.current = false;
     inputAccumRef.current = '';
     outputAccumRef.current = '';
     turnStartRef.current = null;
@@ -244,17 +242,6 @@ export default function Interview({
     return () => session.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persona.id]);
-
-  // Kickoff poke: server doesn't auto-emit a first turn from systemInstruction
-  // alone — needs a user-turn event. Empty activityStart/End pair gives it a
-  // zero-length user turn to respond to (text input would re-trigger 1007).
-  useEffect(() => {
-    if (session.state === 'ready' && !kickoffPokeSentRef.current) {
-      kickoffPokeSentRef.current = true;
-      turnStartRef.current = Date.now();
-      session.sendEmptyTurn();
-    }
-  }, [session.state, session]);
 
   // Auto-scroll transcript
   useEffect(() => {
