@@ -42,20 +42,6 @@ export default function App() {
         <div className="brand" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
           <span className="brand-dot" />
           <span style={{ whiteSpace: 'nowrap' }}>GilJob-E</span>
-          <span
-            className="caption-up"
-            style={{
-              marginLeft: 14,
-              padding: '4px 10px',
-              background: 'var(--surface-strong)',
-              borderRadius: 999,
-              fontSize: 11,
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-            }}
-          >
-            5/1 demo · build 003
-          </span>
         </div>
         <div className="nav-step-row">
           <span className={`nav-step ${stage === 'pre' ? 'active' : 'done'}`}>

@@ -1,83 +1,83 @@
 # CLAUDE.md
 
-이 파일은 Claude Code가 이 레포에서 작업할 때 따라야 할 컨벤션을 정의합니다.
+This file defines the conventions Claude Code must follow when working in this repo.
 
 ## Stack
 
 - **Frontend**: React + TypeScript + Vite (SPA)
-- **Routing**: `react-router` v7 — **library mode**로만 사용 (framework mode 금지, 아래 참고)
+- **Routing**: `react-router` v7 — **library mode only** (framework mode prohibited; see Do NOT below)
 - **Runtime**: Cloudflare Workers
-  - 정적 자산: Workers Static Assets
-  - 백엔드 API: 같은 Worker (단일 배포) 또는 별도 Worker
-- **Database**: Cloudflare D1 (SQLite, DB당 ≤ 10GB)
-- **Queue**: Cloudflare Queues — `Worker A → Queue → Worker B` 패턴
-- **Email**: Cloudflare Email Service (송수신 모두)
+  - Static assets: Workers Static Assets
+  - Backend API: same Worker (single deploy) or a separate Worker
+- **Database**: Cloudflare D1 (SQLite, ≤ 10GB per DB)
+- **Queue**: Cloudflare Queues — `Worker A → Queue → Worker B` pattern
+- **Email**: Cloudflare Email Service (send and receive)
 
 ## Development
 
-- 이 레포는 **Claude Code**로 개발한다. 이 문서는 Claude Code의 작업 가이드.
-- 모델 / effort 기본값: `opus`, `effort max`
-- **subagent + git worktree**로 작업을 병렬화 — main TUI가 블로킹되지 않게 한다.
+- This repo is built with **Claude Code**. This document is the working guide for Claude Code.
+- Default model / effort: `opus`, `effort max`.
+- Parallelize with **subagent + git worktree** so the main TUI never blocks.
 
 ## Memory
 
-- 현재는 로컬 마크다운 파일로 관리. 별도 벡터 DB / 메모리 서비스 도입 금지.
+- Currently managed via local markdown files. Do NOT introduce a separate vector DB or memory service.
 
 ## Do NOT
 
-- **Next.js 금지** — Vercel-편향 빌드, OpenNext 어댑터 시차, supply chain 리스크. React + Vite로 처리.
-- **React Router v7 framework mode 금지** — SPA로 충분. 향후 SSR이 정말 필요해지면 재검토 (그땐 Next.js 대신 React Router framework mode + CF Vite plugin).
-- **Cloudflare Workers AI LoRA fine-tune 금지** — latency 30s+ / 불안정. 외부 LLM API 사용.
-- **로컬 통합 테스트 환경 구축 금지** — non-local-first 원칙 (아래 참고).
-- **Vercel / Vercel 의존 패키지 도입 금지** (`@vercel/*` 등).
+- **No Next.js** — Vercel-biased build, OpenNext adapter lag, supply-chain risk. Use React + Vite.
+- **No React Router v7 framework mode** — SPA is enough. If SSR ever becomes a real need, revisit (and prefer React Router framework mode + the CF Vite plugin over Next.js).
+- **No Cloudflare Workers AI LoRA fine-tune** — latency 30s+ and unstable. Use an external LLM API.
+- **No local integration test environment** — non-local-first principle (see Workflow).
+- **No Vercel or Vercel-dependent packages** (`@vercel/*` etc.).
 
 ## Workflow (non-local-first)
 
-1. Claude Code로 코드 작성
-2. `/verify`만 실행 (단위 테스트 · 타입 체크 · 린트)
-3. **수동 로컬 실행 안 함** → 바로 PR 또는 push
-4. GH Actions(`deploy.yaml`)이 `test → typecheck → build → wrangler deploy` 수행 (2–3분)
-5. dev / staging에서 눈으로 확인
+1. Write code with Claude Code.
+2. Run `/verify` only (unit tests · type-check · lint).
+3. **Skip manual local execution** → straight to PR or push.
+4. GH Actions (`deploy.yaml`) runs `test → typecheck → build → wrangler deploy` (~2-3 min).
+5. Eyeball verify on dev / staging.
 
-배포 대기 중에 다른 작업 진행한다.
+Pick up other work while the deploy runs.
 
 ## CI / Deploy
 
-- 자격증명은 `.env`의 `GH_API_KEY` 사용.
-- 배포·디버깅은 `wrangler` + `gh` CLI만으로 처리한다 (대시보드 클릭 금지).
-- CI 실패 시: `gh run view <run-id> --log-failed`로 로그 확인 후 수정.
+- Use `GH_API_KEY` from `.env` for credentials.
+- Deploy and debug via `wrangler` + `gh` CLI only (no dashboard clicks).
+- On CI failure: `gh run view <run-id> --log-failed` to inspect, then fix.
 
 ## Commands
 
-| 목적 | 명령 |
+| Purpose | Command |
 |---|---|
-| 로컬 실행 (디버깅 한정) | `wrangler dev` |
-| 수동 배포 | `wrangler deploy` |
-| D1 마이그레이션 | `wrangler d1 migrations apply <DB>` |
-| CI 상태 | `gh run list --limit 5` |
-| CI 실패 로그 | `gh run view <id> --log-failed` |
-| 시크릿 등록 | `wrangler secret put <NAME>` |
+| Local run (debugging only) | `wrangler dev` |
+| Manual deploy | `wrangler deploy` |
+| D1 migration | `wrangler d1 migrations apply <DB>` |
+| CI status | `gh run list --limit 5` |
+| CI failure logs | `gh run view <id> --log-failed` |
+| Register secret | `wrangler secret put <NAME>` |
 
 ## Conventions
 
-- 모든 신규 인프라는 **Cloudflare 우선** 검토. 외부 SaaS 도입은 CF에 동등 기능이 없을 때만.
-- 환경변수·시크릿은 `wrangler secret put`으로 등록. 코드/레포에 평문 금지.
-- 큐 컨슈머는 **멱등성(idempotent)** 보장 — 재시도 시 부작용 없어야 함.
-- API 요청/응답은 **Zod schema**로 검증. 클라/서버 모두 타입 일관.
-- React 컴포넌트는 **함수형 + hooks**만 사용. class component 금지.
+- New infrastructure goes through **Cloudflare-first** evaluation. Reach for external SaaS only when CF lacks an equivalent.
+- Env vars and secrets: register via `wrangler secret put`. No plaintext in code or repo.
+- Queue consumers must be **idempotent** — retries cannot produce side effects.
+- Validate API request/response with **Zod schemas** on both client and server.
+- React components are **functional + hooks only**. No class components.
 
-## Live API Turn-End Architecture (in flight, 2026-05-08)
+## Live API turn-end architecture (current as of 2026-05-08)
 
-면접 turn boundary가 두 갈래로 진화 중. 현재 production main은 hybrid(`a6cb6ce`/`b8f93d5`), spike branch에서 manual VAD via worker WS proxy 검증 통과 후 Day 3 verification 진행 중.
+Production main is on **Path B** (manual VAD via Worker WS proxy → Gemini Unconstrained), shipped in PR #8 / `e5aa88d`. The `feat/n-frame-video-stream` branch adds a 1 fps multi-frame video stream during turns (commits `775bba4`, `a9a0b1d` — Day 3 verification + PR pending).
 
-- **Production (main, hybrid)**: client → Gemini 직통 WS, `BidiGenerateContentConstrained` (v1alpha + ephemeral token), auto-VAD + 1.5s mic tail. 조용한 환경에서 안정적, ~2.3s 응답 latency.
-- **Path B (spike, manual VAD)**: `feat/worker-ws-proxy-spike` 브랜치. client → worker `/api/live-ws` → Gemini `BidiGenerateContent` (v1beta + API key). manual VAD `disabled: true` + activityStart/End. 빠른 응답 + 코드 단순화 목표. Day 1 PASS, Day 2 구현 완료, Day 3 AC verification 진행.
+- **Path B (production)**: client → worker `/api/live-ws` → Gemini `BidiGenerateContent` (v1beta + API key). `automaticActivityDetection: { disabled: true }` + `activityStart` / `activityEnd`. Worker holds `GEMINI_API_KEY`; the client never sees a token.
+- **Hybrid (deprecated)**: `BidiGenerateContentConstrained` (v1alpha + ephemeral token) + auto-VAD + 1.5s mic tail. `mintLiveToken` (`/api/live-token`) is retained only for backward compat and is not exercised by the current client.
 
-핵심 invariant (잊으면 사고):
+Core invariants (memorize or pay later):
 
-1. **text + manual activity = 1007 (모든 메서드)** — Constrained 전용 제약이라 알려졌지만 Unconstrained도 동일. manual-VAD 세션에선 `sendText` 호출 절대 X. 대신 `sendKickoff` (zero-content user turn = activityStart + 100ms 무음 + activityEnd) 사용.
-2. **Constrained는 manual VAD 자체 거부** — ephemeral token 경로 → Constrained 강제 → manual activity 마커 송신 시 1007 close. Unconstrained로 가려면 worker가 API key 들고 직접 connect.
-3. **Miniflare(local wrangler dev)는 `fetch({Upgrade: 'websocket'})` outbound 거부** — `new WebSocket()` 사용 강제 (production CF runtime + local 둘 다 작동).
-4. **Worker WS bridge는 client→upstream 메시지 버퍼링 필수** — upstream 연결 전 client setup envelope 도착하면 dropped. `pendingToUpstream` 큐로 누적 후 upstream open 시 drain.
+1. **text + manual activity = 1007 (every method)** — once a session has sent `realtimeInput.text`, sending `activityStart` / `activityEnd` (or vice versa) closes the WS with 1007 Precondition fail. This was thought to be Constrained-only but holds on Unconstrained too. In a manual-VAD session, never call `sendText`. Use `sendKickoff` (zero-content user turn = activityStart + 100ms silent PCM + activityEnd) instead.
+2. **Constrained refuses manual VAD outright** — the ephemeral-token path forces Constrained, which 1007s on any manual activity marker. To use manual VAD you need Unconstrained, which means the worker holds the API key and proxies the WS server-side.
+3. **Miniflare (`wrangler dev`) rejects outbound `fetch({ Upgrade: 'websocket' })`** — must use `new WebSocket()` (works in both production CF runtime and Miniflare).
+4. **Worker WS bridge must buffer client→upstream messages** — if the client setup envelope arrives before the upstream socket opens, it is dropped. Queue into `pendingToUpstream` and drain on `upstream.open`.
 
-자세한 invariant + debugging은 `src/hooks/CLAUDE.md`, `worker/CLAUDE.md` 참조.
+For the full invariant set + debugging signals, see `src/hooks/CLAUDE.md` and `worker/CLAUDE.md`.

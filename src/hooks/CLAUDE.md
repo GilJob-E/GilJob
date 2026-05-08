@@ -1,92 +1,115 @@
 # src/hooks — Live API Invariants
 
-이 폴더는 Gemini Live API와의 WebSocket 세션을 다룬다. 코드 고치기 전에 반드시 아래 invariant를 알아야 한다. 어기면 1007 / 1006 / 답변 hang.
+This folder owns the WebSocket session against the Gemini Live API. Read every invariant below before touching the code. Violating them produces 1007 / 1006 closes or hung answers.
 
-## 절대 위반 금지 invariant
+## Non-negotiable invariants
 
-### 1. text input + manual activity = 1007 (모든 메서드)
+### 1. text input + manual activity = 1007 (every method)
 
-세션에 `realtimeInput.text`를 한 번이라도 보낸 후 `activityStart`/`activityEnd`를 보내면 (또는 그 반대) 서버가 1007 Precondition fail로 close. **Constrained 전용이라 알려졌으나 5/8 실증으로 Unconstrained도 동일 확인됨**.
+Once a session has sent `realtimeInput.text`, sending `activityStart` / `activityEnd` (or the reverse order) closes the WS with 1007 Precondition fail. **Documented as Constrained-only, but empirically observed on Unconstrained too (5/8 evidence).**
 
-→ 한 세션은 **하나의 입력 모드만** 선택:
-- text 모드: `sendText`만 사용 (auto-VAD 모드, hybrid path)
-- manual VAD 모드: `sendKickoff` + `startTurn`/`endTurn`의 activityStart/End만 사용 (Path B)
+→ A session must pick **one input mode**:
+- text mode: `sendText` only (auto-VAD, hybrid path)
+- manual VAD mode: `sendKickoff` + `startTurn` / `endTurn` `activityStart` / `activityEnd` (Path B)
 
-mixing 절대 X.
+Never mix.
 
-### 2. Constrained 메서드는 manual VAD 자체 거부 (Path A 사망 증거)
+### 2. Constrained refuses manual VAD outright (Path A death evidence)
 
-`BidiGenerateContentConstrained` (v1alpha + ephemeral token 경로)는 manual activity 마커를 거부 → 1007. text 입력 없이 빈 activityStart/End 페어만 보내도 마찬가지. (PR #4/#5 → #7 revert 기록)
+`BidiGenerateContentConstrained` (v1alpha + ephemeral-token path) refuses manual activity markers → 1007. Even a bare `activityStart` / `activityEnd` pair without any text input gets the same treatment. (PR #4 / #5 → #7 revert is the receipt.)
 
-→ manual VAD 원하면 **Unconstrained 메서드 (`v1beta.BidiGenerateContent`) + API key 직접 인증** 필수. Worker가 server-side에서 API key 들고 outbound WS 열고 client는 worker proxy로 접속.
+→ Manual VAD requires the **Unconstrained method (`v1beta.BidiGenerateContent`) authenticated with an API key directly**. The worker holds the API key, opens the outbound WS server-side, and the client connects via the worker proxy.
 
-### 3. Worker WS proxy 통한 인증 분리
+### 3. Worker WS proxy splits the auth boundary
 
-Path B 아키텍처:
+Path B architecture:
+
 ```
 Browser ←→ /api/live-ws (worker) ←→ wss://generativelanguage.../v1beta.BidiGenerateContent?key=<API_KEY>
 ```
 
-- Client는 **API key 알 필요 X** — worker URL만 알면 됨
-- Worker secret `GEMINI_API_KEY`만 사용 (`worker/index.ts:108-157`의 `mintLiveToken`은 hybrid backward compat용으로 유지, Path B에선 호출 안 함)
-- Same-origin gate (`worker/index.ts:67-72`)로 외부 스크래퍼 차단
+- Client never needs the API key — only the worker URL.
+- Worker uses the `GEMINI_API_KEY` secret (`worker/index.ts:108-157` `mintLiveToken` is kept for hybrid backward compat only and is not invoked by Path B).
+- Same-origin gate (`worker/index.ts:67-72`) blocks external scrapers.
 
-### 4. systemInstruction은 자동 트리거 X — sendKickoff 필수
+### 4. systemInstruction does NOT auto-trigger — `sendKickoff` is required
 
-systemInstruction 마지막 줄 ("면접을 시작하면 짧은 인사 + 첫 번째 질문을 음성으로 전달하세요") 만으로 모델이 자동 발화 X. **사용자 turn 이벤트가 와야 모델이 응답**.
+The last line of systemInstruction ("면접을 시작하면 짧은 인사 + 첫 번째 질문을 음성으로 전달하세요") is not enough on its own to make the model speak. **A user-turn event must arrive before the model responds.**
 
-→ `sendKickoff` 함수가 **zero-content user turn** 시뮬레이션:
-- `activityStart` 송신
-- 100ms 무음 PCM (3200 bytes zeros, 16kHz mono int16) 송신
-- `activityEnd` 송신
+→ `sendKickoff` simulates a **zero-content user turn**:
+- send `activityStart`
+- send 100ms silent PCM (3200 bytes of zeros, 16kHz mono int16)
+- send `activityEnd`
 
-**빈 페어 (audio 없음)는 거부**. 실제 audio bytes 필요.
+**An empty pair (no audio) is rejected.** Real audio bytes are required.
 
-### 5. Manual `activityStart`/`activityEnd`는 audio chunk와 짝이 맞아야 함
+### 5. Manual `activityStart` / `activityEnd` must be paired with audio chunks
 
-`startTurn` → `activityStart` 송신 + audio capture 시작 + video frame 1장
-`endTurn` → `activityEnd` 송신 + audio capture 즉시 종료 (setTimeout 없음)
-짝 안 맞으면 서버가 turn boundary 인식 못해 hang.
+`startTurn` → `activityStart` send + audio capture start + first video frame
+`endTurn` → `activityEnd` send + immediate audio capture stop (no `setTimeout`)
 
-### 6. Constrained method는 ephemeral token에 lock-in (참고 — 현재는 Path B로 우회)
+A pair mismatch makes the server fail to recognize the turn boundary and the answer hangs.
 
-WebSocket URL이 `BidiGenerateContentConstrained?access_token=...` 패턴이면 ephemeral token + v1alpha 강제. **Unconstrained로 바꾸려면**:
-- ❌ Client에 API key 노출 (보안 disaster, 절대 X)
-- ✅ Worker가 server-side에서 API key 들고 proxy (현재 Path B 채택)
+### 6. Constrained method is locked to ephemeral tokens (kept for reference — Path B sidesteps this)
 
-## 모델 버전 의존 동작 (재검증 트리거)
+If the WebSocket URL is `BidiGenerateContentConstrained?access_token=...`, you're locked into Constrained + v1alpha. Switching to Unconstrained means either:
 
-이 폴더 코드는 **`gemini-3.1-flash-live-preview`**에서 검증됨 (2026-05-08). 다음 변경은 전체 검증 재수행 의무화:
+- ❌ Exposing the API key to the client (security disaster, never)
+- ✅ Worker proxies server-side with the API key (Path B, current)
 
-- `useLiveSession.ts`의 hard-coded `model: 'models/gemini-3.1-flash-live-preview'` 변경
-- `wrangler.toml`의 `GEMINI_LIVE_MODEL` env 추가 (현재 worker default와 일치하지만 stale 주석 cleanup 진행 중)
-- 모델 deprecate → 자동 다운그레이드
-- v1alpha/v1beta → 다른 API version 마이그레이션
+### 7. 1 fps video setInterval lifecycle — `clearVideoInterval` from 5 paths
 
-검증 항목:
-- `sendKickoff` 후 첫 발화 자동 emit (~1-3초)
-- 1007 fail 발생 X
-- 답변 종료 후 응답 latency <500ms (P50) / <1200ms (P95)
+`useLiveSession.ts:startTurn` opens a 1 fps video setInterval (`videoIntervalRef.current = setInterval(captureAndSendFrame, 1000)`) during a manual VAD turn (gated behind `import.meta.env.VITE_N_FRAME_LOOP_ENABLED !== '0'`). The interval **must** be cleared from every cleanup path or frames leak into the next turn or after the session ends:
 
-## 비밀번호 / 시크릿
+- `endTurn` — first action, **before** the `activityEnd` send (so no stray frame slips past the boundary)
+- `disconnect` — first action
+- `ws.onerror` — before `setError`
+- `ws.onclose` — before `cleanupTurnAudio`
+- `useEffect` cleanup — transitively, via `disconnect`
 
-- `GEMINI_API_KEY`는 `wrangler secret`에만. 코드/git/로그에 절대 X.
-- Path B는 client에 token 안 노출 — worker가 API key로 server-side 직접 인증.
-- (참고) hybrid path의 `tokenData.token`은 ephemeral (30분, 1회 사용) — 로그 출력해도 큰 위험 X (만료 빠름)이지만 습관적 마스킹 권장.
+`clearVideoInterval` is idempotent: callable twice with no error, sets `videoIntervalRef.current = null` (not just `clearInterval`-and-leave), and resets `framesSentRef.current = 0` so the per-turn counter does not bleed across turns. DEV asserts at all 5 sites verify the ref was actually nulled.
+
+Telemetry: `outputTranscription` is accumulated per turn against `VISUAL_ACK_PATTERN = /(표정|자세|끄덕|손짓|편안|긴장|변화|미소)/`; on `turnComplete` we log `[live] visual-ack: <bool> rate: <x>/<y>`. The phrase list is the locked source of truth shared by `.omc/specs/deep-interview-n-frame.md`, `.omc/plans/n-frame-multi-frame.md`, `.omc/spikes/n-frame-spike-2026-05-08.md`, and README "Deferred verifications". Changing it requires synchronized updates across all five.
+
+→ Kill switch: `import.meta.env.VITE_N_FRAME_LOOP_ENABLED='0'` skips the setInterval entirely → original single-frame behavior. Production fallback without a code revert (Cloudflare env change + rebuild).
+
+→ Skipping any cleanup path leaks frames between turns or after disconnect, confuses the model, and wastes tokens.
+
+## Model-version-dependent behavior (re-validation triggers)
+
+Code in this folder is verified against **`gemini-3.1-flash-live-preview`** (2026-05-08). Any of the following requires re-running the full verification:
+
+- The hard-coded `model: 'models/gemini-3.1-flash-live-preview'` in `useLiveSession.ts` changes
+- `wrangler.toml` adds a `GEMINI_LIVE_MODEL` env (currently matches the worker default; stale comments are being cleaned up)
+- The model is deprecated → auto-downgrade
+- v1alpha / v1beta → some other API version migration
+
+Verification checklist:
+
+- First utterance auto-emits ~1-3s after `sendKickoff`
+- No 1007 closes
+- Post-answer response latency <500ms (P50) / <1200ms (P95)
+
+## Secrets
+
+- `GEMINI_API_KEY` lives in `wrangler secret` and only there. Never in code, git, or logs.
+- Path B never exposes a token to the client — the worker authenticates server-side with the API key.
+- (Aside) hybrid path's `tokenData.token` is ephemeral (30 min, single-use) — logging it isn't catastrophic (expires quickly), but mask it as a habit.
 
 ## Build marker
 
-`useLiveSession.ts:4`의 `console.log('[live build]', __BUILD_SHA__)` — Vite `define`이 빌드 시점 git short SHA 주입 (`vite.config.ts`). **manual bump 패턴 (예: `v11`) 사용 금지** — 5/7 revert 후 stale 마커가 남아 디버깅 혼란 야기한 사고 학습.
+`useLiveSession.ts:4`'s `console.log('[live build]', __BUILD_SHA__)` — Vite `define` injects the git short SHA at build time (`vite.config.ts`). **Don't use a manual bump pattern (e.g. `v11`)** — after the 5/7 revert a stale marker survived and made debugging harder. Lesson learned.
 
-## 디버깅 시 자주 보는 시그널
+## Common debugging signals
 
-| 콘솔 / 증상 | 원인 | 해결 |
+| Console / symptom | Cause | Fix |
 |---|---|---|
-| `1007 Precondition check failed` | text + manual activity 혼합 | sendText 호출 제거, sendKickoff 사용 |
-| `1006` (즉시 close) | Worker WS handshake 실패 또는 outbound 연결 거부 | curl 테스트로 worker 응답 확인. Miniflare는 `fetch({Upgrade})` 거부 → `new WebSocket()` 사용 |
-| `setupComplete` 안 옴 | upstream WS open 전 client setup envelope dropped | `worker/ws-bridge.ts`의 pendingToUpstream 버퍼 작동 확인 |
-| 무한 "세션 준비, 첫 질문 대기 중…" | sendKickoff 누락 또는 audio 없는 빈 activity 페어 | sendKickoff에 100ms 무음 audio 포함 확인 |
-| 답변 종료 후 응답 영원히 안 옴 | activityEnd 안 갔거나 WS close | endTurn에서 ws.send 확인 |
-| Frame index out of bounds (warn) | SpatialReal SDK cold load 정상 동작 | 무시 (해롭지 않음) |
-| 27초 콜드 스타트 | live-preview 모델 first-session 정상 범위 | 정상 (1-3초 cold start + 모델 load 시 더) |
-| Console outputTranscript chunk 도배 | 매 streaming chunk마다 [live] 로그 | 5/8 fix됨 (handleServerMessage에서 hasTranscript 트리거 제거) |
+| `1007 Precondition check failed` | text + manual activity mixed | Remove the `sendText` call; use `sendKickoff` |
+| `1006` (immediate close) | Worker WS handshake failed or outbound rejected | `curl` the worker; in Miniflare use `new WebSocket()` (the `fetch({Upgrade})` pattern is rejected) |
+| `setupComplete` never arrives | Client setup envelope dropped before upstream WS opened | Verify the `pendingToUpstream` buffer in `worker/ws-bridge.ts` |
+| Stuck on "세션 준비, 첫 질문 대기 중…" | Missing `sendKickoff` or empty activity pair (no audio) | Confirm `sendKickoff` sends 100ms silent audio |
+| No response after `endTurn` | `activityEnd` didn't go out, or WS closed | Check the `ws.send` in `endTurn` |
+| `Frame index out of bounds` (warn) | SpatialReal SDK cold-load normal | Ignore (harmless) |
+| 27s cold start | live-preview model first-session normal range | Normal (1-3s baseline cold start; first-ever model load adds more) |
+| Console flooded with `outputTranscript` chunks | Old `[live]` log fired on every streaming chunk | Fixed 5/8 (the `hasTranscript` trigger was removed from `handleServerMessage`) |
+| Frames leak after a turn ends | `clearVideoInterval` skipped on a cleanup path | Verify all 5 paths (endTurn / disconnect / ws.onerror / ws.onclose / useEffect via disconnect); DEV asserts will surface the offender |
