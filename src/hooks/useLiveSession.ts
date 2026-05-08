@@ -4,10 +4,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // Auto-bumps on every commit so caching / stale-bundle issues are unambiguous
 // in DevTools. Replaces the manual `v11`-style marker that survived a revert.
 console.log('[live build]', __BUILD_SHA__);
+console.log(
+  '[live] n-frame loop enabled:',
+  import.meta.env.VITE_N_FRAME_LOOP_ENABLED ?? '1 (default)',
+);
 import type { AudioCaptureHandle } from '../lib/audio-capture';
 import { startAudioCapture } from '../lib/audio-capture';
 import { PCMPlayer } from '../lib/pcm-player';
 import { captureWebcamJpeg } from '../lib/webcam';
+
+// Visual-ack telemetry phrase list — regex source of truth. Mirrors the locked
+// list in .omc/specs/deep-interview-n-frame.md, .omc/plans/n-frame-multi-frame.md,
+// .omc/spikes/n-frame-spike-2026-05-08.md, and README.md "Deferred verifications".
+// Change requires synchronized update across all five.
+const VISUAL_ACK_PATTERN = /(표정|자세|끄덕|손짓|편안|긴장|변화|미소)/;
 
 export type SessionState =
   | 'idle'
@@ -85,6 +95,18 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
   const firstAudioFiredRef = useRef(false);
   const setupCompleteRef = useRef(false);
 
+  // 1 fps multi-frame video stream (Day 2 of n-frame plan).
+  // Lifecycle: setInterval started in startTurn, cleared in clearVideoInterval
+  // which is invoked from 5 paths (endTurn, disconnect, ws.onerror, ws.onclose,
+  // useEffect cleanup via disconnect). Leak between turns confuses the model.
+  const videoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const framesSentRef = useRef<number>(0);
+  // Visual-ack telemetry — per-turn accumulator + cumulative rate.
+  const outputAccumRef = useRef<string>('');
+  const visualAckSeenRef = useRef<boolean>(false);
+  const visualAckTurnsRef = useRef<number>(0);
+  const totalTurnsRef = useRef<number>(0);
+
   const setError = useCallback((err: string) => {
     setLastError(err);
     setState('error');
@@ -98,7 +120,26 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     }
   }, []);
 
+  // Idempotent: callable twice with no error. Sets ref to null (not just clears
+  // the timer) and resets the per-turn frame counter so it does not bleed into
+  // the next turn. Called from 5 cleanup paths (endTurn, disconnect, ws.onerror,
+  // ws.onclose, useEffect cleanup via disconnect).
+  const clearVideoInterval = useCallback(() => {
+    if (videoIntervalRef.current !== null) {
+      clearInterval(videoIntervalRef.current);
+      videoIntervalRef.current = null;
+    }
+    framesSentRef.current = 0;
+    if (import.meta.env.DEV && videoIntervalRef.current !== null) {
+      console.error('[live] BUG: clearVideoInterval did not null the ref');
+    }
+  }, []);
+
   const disconnect = useCallback(() => {
+    clearVideoInterval();
+    if (import.meta.env.DEV && videoIntervalRef.current !== null) {
+      console.error('[live] BUG: videoIntervalRef not cleared in disconnect');
+    }
     void cleanupTurnAudio();
     void playerRef.current?.close();
     playerRef.current = null;
@@ -113,7 +154,7 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     turnStartTsRef.current = null;
     firstAudioFiredRef.current = false;
     setState('idle');
-  }, [cleanupTurnAudio]);
+  }, [cleanupTurnAudio, clearVideoInterval]);
 
   const handleServerMessage = useCallback((msg: ServerMessage) => {
     // Quiet trace: only log frames that carry actionable signal (transcript,
@@ -182,12 +223,24 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
       optsRef.current.onInputTranscript?.(sc.inputTranscription.text);
     }
     if (sc.outputTranscription?.text) {
+      outputAccumRef.current += sc.outputTranscription.text;
+      if (!visualAckSeenRef.current && VISUAL_ACK_PATTERN.test(outputAccumRef.current)) {
+        visualAckSeenRef.current = true;
+      }
       optsRef.current.onOutputTranscript?.(sc.outputTranscription.text);
     }
     if (sc.interrupted) {
       playerRef.current?.reset();
     }
     if (sc.turnComplete) {
+      if (visualAckSeenRef.current) visualAckTurnsRef.current += 1;
+      console.log(
+        '[live] visual-ack:',
+        visualAckSeenRef.current,
+        'rate:',
+        `${visualAckTurnsRef.current}/${totalTurnsRef.current}`,
+      );
+      outputAccumRef.current = '';
       firstAudioFiredRef.current = false;
       setState('ready');
       optsRef.current.onTurnComplete?.();
@@ -270,8 +323,18 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
       }
     };
 
-    ws.onerror = () => setError('websocket error');
+    ws.onerror = () => {
+      clearVideoInterval();
+      if (import.meta.env.DEV && videoIntervalRef.current !== null) {
+        console.error('[live] BUG: videoIntervalRef not cleared in ws.onerror');
+      }
+      setError('websocket error');
+    };
     ws.onclose = ev => {
+      clearVideoInterval();
+      if (import.meta.env.DEV && videoIntervalRef.current !== null) {
+        console.error('[live] BUG: videoIntervalRef not cleared in ws.onclose');
+      }
       wsRef.current = null;
       setupCompleteRef.current = false;
       void cleanupTurnAudio();
@@ -280,7 +343,7 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
         setError(`websocket closed: ${ev.code} ${ev.reason || ''}`.trim());
       }
     };
-  }, [cleanupTurnAudio, handleServerMessage, setError]);
+  }, [cleanupTurnAudio, clearVideoInterval, handleServerMessage, setError]);
 
   const startTurn = useCallback(async () => {
     const ws = wsRef.current;
@@ -289,6 +352,10 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     if (stateRef.current === 'speaking' || stateRef.current === 'thinking' || stateRef.current === 'listening') {
       return;
     }
+
+    framesSentRef.current = 0;
+    visualAckSeenRef.current = false;
+    totalTurnsRef.current += 1;
 
     setState('listening');
     turnStartTsRef.current = Date.now();
@@ -308,6 +375,28 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
           },
         }),
       );
+    }
+
+    // 1 fps multi-frame stream during the turn. Kill switch: set
+    // VITE_N_FRAME_LOOP_ENABLED='0' at build time to fall back to the original
+    // single-frame behavior without code revert.
+    const N_FRAME_ENABLED = import.meta.env.VITE_N_FRAME_LOOP_ENABLED ?? '1';
+    if (N_FRAME_ENABLED !== '0') {
+      const captureAndSendFrame = async () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const f = await captureWebcamJpeg();
+        if (!f || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(
+          JSON.stringify({
+            realtimeInput: { video: { mimeType: f.mimeType, data: f.b64 } },
+          }),
+        );
+        framesSentRef.current += 1;
+        if (framesSentRef.current % 5 === 0) {
+          console.log('[live] frames sent in current turn:', framesSentRef.current);
+        }
+      };
+      videoIntervalRef.current = setInterval(captureAndSendFrame, 1000);
     }
 
     try {
@@ -333,13 +422,21 @@ export function useLiveSession(opts: UseLiveSessionOptions): LiveSessionApi {
     // Manual VAD: button click is the authoritative end-of-turn signal.
     // No silence tail / no server-side VAD threshold tuning — we just tell
     // the server "this user turn is done" and immediately cut the mic.
+    // clearVideoInterval first so no stray frame slips past activityEnd.
+    // Snapshot framesSentRef before clearing — the helper resets it to 0.
+    const totalFrames = framesSentRef.current;
+    clearVideoInterval();
+    if (import.meta.env.DEV && videoIntervalRef.current !== null) {
+      console.error('[live] BUG: videoIntervalRef not cleared in endTurn');
+    }
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
     }
+    console.log('[live] turn ended; total video frames:', totalFrames);
     setState('thinking');
     void cleanupTurnAudio();
-  }, [cleanupTurnAudio]);
+  }, [cleanupTurnAudio, clearVideoInterval]);
 
   const sendText = useCallback((text: string) => {
     const ws = wsRef.current;

@@ -17,11 +17,15 @@ Gemini Live API의 비대칭 요구사항:
 
 24kHz로 통일하려고 하면 mic stream이 Gemini에서 거부되거나 음질 저하. 16kHz로 통일하면 SpatialReal/PCMPlayer가 high pitch로 재생.
 
-### 2. Webcam single-frame-per-turn 패턴
+### 2. Webcam multi-frame stream — 1 fps during turn
 
-`webcam.ts:captureWebcamJpeg`은 **턴 시작 시 1장만** 캡처. 연속 video stream 아님. `useLiveSession.ts:startTurn`에서 호출 → `realtimeInput.video` 한 번 송신 → 그 턴 끝까지 추가 video 송신 X.
+`webcam.ts:captureWebcamJpeg`은 단일 프레임 캡처 함수. **`useLiveSession.ts:startTurn`에서 1초 간격 `setInterval`로 반복 호출**되어 답변 동안 multi-frame stream을 형성. 각 frame은 독립 `realtimeInput.video` 메시지.
 
-→ continuous video stream 시도 X (Gemini Live는 single-frame 디자인). N-frame 확장은 별도 follow-up issue로 평가됨 (`.omc/plans/...`).
+Vendor 설계 (Gemini Live `realtimeInput.video`)는 1 fps multi-frame stream — 이 설계와 일치. cap 초과 빈도(>1 fps)는 docs 미정의이므로 시도 금지. Manual VAD path은 vendor 미문서 영역이라 spike (`.omc/spikes/n-frame-spike-2026-05-08.md`)에서 SPIKE-0 PASS로 motivation 확인 후 도입. SPIKE-1 (audio+video 2분 cap 행동)·SPIKE-2 (mid-turn frame attribution paired evidence)는 user 결정으로 production 관찰로 deferred — `visualAckSeenRef` ratio + kill switch + 24h rollback gate가 보호장치 (자세한 내용은 `.omc/plans/n-frame-multi-frame.md` + README "Deferred verifications" 참조).
+
+→ `setInterval`은 `endTurn` / `disconnect` / `ws.onerror` / `ws.onclose` / `useEffect` cleanup의 5개 경로에서 모두 정리되어야 함. leak 시 frames이 다음 턴까지 새 나감.
+
+→ Kill switch: `import.meta.env.VITE_N_FRAME_LOOP_ENABLED='0'`로 production에서 single-frame fallback 가능 (배포 없이 Cloudflare env 변수만 변경 후 재빌드).
 
 ### 3. PCM base64 인코딩은 8-bit boundary 정확
 
