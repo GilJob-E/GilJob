@@ -23,7 +23,7 @@ export default function Results({ result, persona, orbColor, onRestart }: Result
             {persona.candidate.name}님 면접이<br />마무리됐어요.
           </h1>
           <p className="body-md" style={{ maxWidth: 580 }}>
-            아래 기록은 5/1 데모용 mock 데이터로 생성되었습니다. 실제 배포본에서는 latency·비전 키워드·LLM 컨텍스트가 모두 server-side에서 측정됩니다.
+            transcript와 latency는 Live API 실측이며, 비전 키워드는 페르소나별 사전 정의 데이터입니다.
           </p>
         </div>
 
@@ -57,7 +57,7 @@ export default function Results({ result, persona, orbColor, onRestart }: Result
 
             <div className="card">
               <span className="caption-up">비전 분석 기여</span>
-              <h3 className="display-sm" style={{ margin: '14px 0 16px' }}>1프레임 병렬화로 추가된 신호</h3>
+              <h3 className="display-sm" style={{ margin: '14px 0 16px' }}>1 fps 비전 스트림이 추가한 신호</h3>
               <div className="vision-contrib-list">
                 {persona.visionFrames.map((frame, i) => (
                   <div key={i} className="vc-row">

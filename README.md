@@ -59,7 +59,7 @@ src/
     audio-capture.ts        # mic → 16kHz PCM
     pcm-player.ts           # 24kHz PCM gapless 재생
     pcm.ts                  # base64 ↔ Int16 변환
-    webcam.ts               # 1프레임 JPEG 캡처
+    webcam.ts               # JPEG 캡처 (1 fps multi-frame stream용)
     system-instruction.ts   # 페르소나 → 시스템 프롬프트
   data.ts                   # 3 페르소나 (토스 PM / 카카오 BE / 네이버 PD)
 _design/                    # 원본 Claude Design 핸드오프 번들
@@ -68,13 +68,13 @@ _design/                    # 원본 Claude Design 핸드오프 번들
 ## 동작 흐름
 
 1. `PreInterview`에서 페르소나 자소서·회사 정보·검증할 명제 표시 → "면접 시작하기" 클릭
-2. `Interview` 마운트 시 `useLiveSession.connect()` → Worker `/api/live-token` 호출 → ephemeral token 받음
-3. 클라이언트가 `wss://generativelanguage.googleapis.com/ws/.../BidiGenerateContentConstrained?access_token=...` 로 WebSocket 연결
-4. Setup envelope 전송 (model, systemInstruction, ko-KR speechConfig, in/out audio transcription)
-5. `setupComplete` 수신 → 첫 질문 트리거를 위해 `realtimeInput.text` 짧게 한 번 전송
+2. `Interview` 마운트 시 `useLiveSession.connect()` → Worker `/api/live-ws`로 same-origin WebSocket 연결
+3. Worker가 server-side에서 `GEMINI_API_KEY`로 `wss://generativelanguage.googleapis.com/.../BidiGenerateContent?key=...` (Unconstrained, v1beta) 에 outbound WS 연결 후 양방향 proxy
+4. Setup envelope 전송 (model, systemInstruction, ko-KR speechConfig, manual VAD `automaticActivityDetection: { disabled: true }`, in/out audio transcription)
+5. `setupComplete` 수신 → `sendKickoff` (zero-content user turn: activityStart + 100ms 무음 PCM + activityEnd) 송신해 첫 질문 트리거
 6. 서버가 24kHz PCM 오디오 청크와 outputTranscription 텍스트를 동시에 스트리밍 → 클라이언트가 음성 재생 + 텍스트를 Q 카드에 흘려 표시
-7. 사용자가 "답변 시작" 클릭 → webcam 1프레임 캡처 + 마이크를 16kHz PCM으로 스트리밍 시작
-8. "답변 종료" 클릭 → mic 종료 → 자동 VAD가 발화 종료 감지 → 서버가 다음 질문 생성 → 6번으로 루프
+7. 사용자가 "답변 시작" 클릭 → `activityStart` 송신 + 마이크를 16kHz PCM으로 스트리밍 시작 + webcam을 1초 간격으로 캡처해 multi-frame video stream 송신 (`VITE_N_FRAME_LOOP_ENABLED='0'`로 single-frame fallback)
+8. "답변 종료" 클릭 → `activityEnd` 송신 + mic 즉시 종료 + video setInterval 정리 → 서버가 다음 질문 생성 → 6번으로 루프
 9. 5턴 + closing 인사 후 `Results` 화면으로 자동 전환
 
 ## 환경 변수 / 시크릿
@@ -91,10 +91,10 @@ _design/                    # 원본 Claude Design 핸드오프 번들
 - 브라우저: Chrome/Edge 권장 (AudioWorklet + getUserMedia + WebSocket). Safari는 검증 안 됨.
 - 마이크/웹캠 권한 거부 시: 마이크 거부면 답변 불가, 웹캠 거부면 비전 입력만 누락 (오디오/텍스트는 계속 동작).
 - 네트워크 끊김 시: 자동 재연결 로직 없음. UI에 "재연결" 버튼 노출.
-- ephemeral token: `uses=1`, 30분 만료. 한 세션이 30분을 넘기면 끊김.
+- 세션 길이: Gemini Live audio+video 세션 default cap = 2분 (vendor docs). 5턴 면접 누적이 cap에 닿을 가능성 — `Deferred verifications` SPIKE-1 항목 참조.
 - 한국어 voice 품질은 Live API preview 모델(`gemini-3.1-flash-live-preview`)에 의존.
 
-## 5/1 데모 시나리오
+## 데모 흐름
 
 페르소나 셋 중 하나를 선택 → 면접 시작 → 5턴 (baseline → probe-evidence → probe-thinking → tension → closing) 진행 → Results에서 latency·전체 transcript 확인. mock fallback 없음, 장애 시 재시도.
 

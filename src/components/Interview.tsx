@@ -60,7 +60,7 @@ function VisionPanel({ captured, captureFlash }: { captured: boolean; captureFla
     <div className="vision-card">
       <div className="vision-head">
         <span className="caption-up">비전</span>
-        <span className="mono-xs" style={{ color: 'var(--muted)' }}>1 frame · Live API</span>
+        <span className="mono-xs" style={{ color: 'var(--muted)' }}>1 fps · Live API</span>
       </div>
       <div className="vision-frame">
         <div className={`vision-thumb ${captureFlash ? 'flash' : ''}`}>
@@ -81,8 +81,8 @@ function VisionPanel({ captured, captureFlash }: { captured: boolean; captureFla
         <div className="vision-keywords">
           <span className="caption" style={{ color: 'var(--muted-soft)', fontSize: 12 }}>
             {captured
-              ? '프레임 전송됨 · 모델 컨텍스트에 합쳐짐'
-              : '발화 시작 시 1프레임 캡처'}
+              ? '프레임 송신 중 · 1초 간격'
+              : '발화 중 1초 간격으로 프레임 캡처'}
           </span>
         </div>
       </div>
@@ -424,7 +424,7 @@ export default function Interview({
                 {!isError && isConnecting && 'Gemini Live API에 연결 중…'}
                 {!isError && session.state === 'ready' && !kickoffSentRef.current && '세션 준비됨, 첫 질문 요청 중…'}
                 {!isError && isReadyForAnswer && kickoffSentRef.current && 'Space 또는 버튼을 눌러 답변을 시작하세요.'}
-                {session.state === 'listening' && '발화 중. 영상 1프레임은 시작 시 캡처됨.'}
+                {session.state === 'listening' && '발화 중. 영상 프레임이 1초 간격으로 송신됨.'}
                 {session.state === 'thinking' && 'Live API가 답변과 영상을 분석 중.'}
                 {session.state === 'speaking' && '면접관이 다음 질문을 음성으로 전달 중.'}
               </div>
