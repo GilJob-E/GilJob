@@ -112,25 +112,158 @@ function LatencyBars({ ttft }: { ttft: number }) {
   );
 }
 
-function HashimotoPanel({ strategy, analyzing }: { strategy: HashimotoStrategy | null; analyzing: boolean }) {
+const TONE_COLOR: Record<string, string> = {
+  Analytical_Pressure:      '#ef4444',
+  Neutral_Curious:          '#3b82f6',
+  Supportive:               '#22c55e',
+  Skeptical_Professional:   '#f59e0b',
+};
+
+function DepthDots({ depth, max = 5 }: { depth: number; max?: number }) {
   return (
-    <div className="vision-card">
-      <div className="vision-head">
-        <span className="caption-up">Hashimoto</span>
-        <span className="mono-xs" style={{ color: analyzing ? 'var(--accent)' : 'var(--muted)' }}>
-          {analyzing ? '분석 중…' : strategy ? '전략 주입됨' : '대기'}
+    <span style={{ display: 'inline-flex', gap: 3, verticalAlign: 'middle' }}>
+      {Array.from({ length: max }).map((_, i) => (
+        <span
+          key={i}
+          style={{
+            width: 6, height: 6, borderRadius: '50%',
+            background: i < depth ? 'var(--ink)' : 'var(--hairline-strong)',
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function HRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr', gap: 8, marginBottom: 6, alignItems: 'start' }}>
+      <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingTop: 1 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 12, color: 'var(--ink)', lineHeight: 1.45, wordBreak: 'keep-all' }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function HashimotoPanel({
+  strategy,
+  analyzing,
+  ready,
+  turnCount,
+}: {
+  strategy: HashimotoStrategy | null;
+  analyzing: boolean;
+  ready: boolean;
+  turnCount: number;
+}) {
+  const statusLabel = analyzing ? 'ANALYZING' : turnCount > 0 ? `TURN ${turnCount}` : ready ? 'READY' : 'IDLE';
+  const statusColor = analyzing ? 'var(--accent)' : turnCount > 0 ? 'var(--success, #22c55e)' : ready ? 'var(--ink)' : 'var(--muted)';
+  const tone = strategy?.interviewer_persona_guidance.emotion_direction ?? '';
+  const toneColor = TONE_COLOR[tone] ?? 'var(--muted)';
+  const ctx = strategy?.current_context;
+
+  return (
+    <div className="latency-block" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {/* ── Header ── */}
+      <div className="latency-head" style={{ marginBottom: 10 }}>
+        <span className="caption-up">Hashimoto Engine</span>
+        <span className="mono-xs" style={{ color: statusColor, display: 'flex', alignItems: 'center', gap: 5 }}>
+          {analyzing && (
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: 'var(--accent)',
+              display: 'inline-block',
+              animation: 'orbpulse 0.8s ease-in-out infinite',
+            }} />
+          )}
+          {statusLabel}
         </span>
       </div>
-      {strategy && (
-        <div style={{ fontSize: 11, color: 'var(--muted-soft)', lineHeight: 1.6, padding: '6px 0' }}>
-          <div><span style={{ color: 'var(--ink)' }}>주제</span> {strategy.current_context.topic} (깊이 {strategy.current_context.depth_level})</div>
-          <div><span style={{ color: 'var(--ink)' }}>목표</span> {strategy.logic_goal}</div>
-          <div><span style={{ color: 'var(--ink)' }}>공백</span> {strategy.logical_gap_to_bridge}</div>
-          <div><span style={{ color: 'var(--ink)' }}>톤</span> {strategy.interviewer_persona_guidance.emotion_direction}</div>
-          {strategy.current_context.topic_changed && (
-            <div style={{ color: 'var(--accent)' }}>▶ 주제 전환</div>
-          )}
+
+      {/* ── No data states ── */}
+      {!strategy && !analyzing && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0, lineHeight: 1.5 }}>
+          {ready ? '첫 번째 답변 후 분석이 시작됩니다.' : '엔진 초기화 중…'}
+        </p>
+      )}
+      {analyzing && !strategy && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {['70%', '90%', '55%', '80%'].map((w, i) => (
+            <div key={i} style={{
+              height: 10, borderRadius: 4, width: w,
+              background: 'var(--hairline-strong)',
+              animation: `orbpulse 1.2s ease-in-out ${i * 0.15}s infinite`,
+            }} />
+          ))}
         </div>
+      )}
+
+      {/* ── Strategy content ── */}
+      {strategy && ctx && (
+        <>
+          {/* Context bar */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: 'var(--canvas-soft)', borderRadius: 8, padding: '6px 10px', marginBottom: 10,
+          }}>
+            <span style={{ fontSize: 12, color: 'var(--ink)', fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {ctx.topic}
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 8 }}>
+              <DepthDots depth={ctx.depth_level} />
+              <span style={{ fontSize: 10, color: 'var(--muted)' }}>{ctx.depth_level}</span>
+            </span>
+          </div>
+
+          {/* State badges */}
+          {(ctx.topic_changed || ctx.transition_hint || ctx.multimodal_feedback_requirement) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+              {ctx.topic_changed && (
+                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 99, background: '#3b82f620', color: '#3b82f6', fontWeight: 600 }}>
+                  주제 전환
+                </span>
+              )}
+              {ctx.transition_hint === 'direction_change' && (
+                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 99, background: '#f59e0b20', color: '#f59e0b', fontWeight: 600 }}>
+                  방향 전환
+                </span>
+              )}
+              {ctx.multimodal_feedback_requirement && (
+                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 99, background: '#ef444420', color: '#ef4444', fontWeight: 600 }}>
+                  {ctx.multimodal_feedback_requirement}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Divider */}
+          <div style={{ height: 1, background: 'var(--hairline)', marginBottom: 10 }} />
+
+          {/* Strategy rows */}
+          <HRow label="논리 목표" value={strategy.logic_goal} />
+          <HRow label="논리 공백" value={strategy.logical_gap_to_bridge} />
+
+          <div style={{ height: 1, background: 'var(--hairline)', margin: '4px 0 10px' }} />
+
+          <HRow label="의도" value={strategy.interviewer_persona_guidance.intent} />
+          <HRow label="포커스" value={strategy.interviewer_persona_guidance.focus_point} />
+
+          {/* Tone badge */}
+          <div style={{ marginTop: 4 }}>
+            <span style={{
+              fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+              padding: '3px 9px', borderRadius: 99,
+              background: `${toneColor}18`,
+              color: toneColor,
+              border: `1px solid ${toneColor}40`,
+            }}>
+              {tone.replace(/_/g, ' ')}
+            </span>
+          </div>
+        </>
       )}
     </div>
   );
@@ -187,6 +320,8 @@ export default function Interview({
   const [streamingCandidate, setStreamingCandidate] = useState('');
   const [hashimotoStrategy, setHashimotoStrategy] = useState<HashimotoStrategy | null>(null);
   const [hashimotoAnalyzing, setHashimotoAnalyzing] = useState(false);
+  const [hashimotoReady, setHashimotoReady] = useState(false);
+  const [hashimotoTurnCount, setHashimotoTurnCount] = useState(0);
 
   const inputAccumRef = useRef('');
   const outputAccumRef = useRef('');
@@ -221,7 +356,9 @@ export default function Interview({
         body: JSON.stringify({ resume_text: resumeText, topic_count: 3 }),
       });
       if (!res.ok) throw new Error(`init ${res.status}`);
-      console.log('[hashimoto] initialized', await res.json());
+      const data = await res.json() as { topics: string[]; current_topic: string };
+      console.log('[hashimoto] initialized', data);
+      setHashimotoReady(true);
     } catch (e) {
       console.warn('[hashimoto] init failed (non-fatal):', e);
     }
@@ -251,6 +388,7 @@ export default function Interview({
         // before reconnect.
         transcriptLatestRef.current = nextTranscript;
         setHashimotoStrategy(strategy);
+        setHashimotoTurnCount(c => c + 1);
         // React will re-render with new systemInstruction on next tick.
         // queueMicrotask ensures connect() runs after the render cycle so
         // optsRef.current in useLiveSession has the updated systemInstruction.
@@ -358,6 +496,8 @@ export default function Interview({
     setHasCapturedFrame(false);
     setHashimotoStrategy(null);
     setHashimotoAnalyzing(false);
+    setHashimotoReady(false);
+    setHashimotoTurnCount(0);
     void hashimotoInit(persona.resume);
     void session.connect();
     return () => session.disconnect();
@@ -600,7 +740,12 @@ export default function Interview({
               <VisionPanel captured={hasCapturedFrame} captureFlash={captureFlash} />
               <LatencyBars ttft={latency.llm} />
               <Pipeline state={effectiveState} />
-              <HashimotoPanel strategy={hashimotoStrategy} analyzing={hashimotoAnalyzing} />
+              <HashimotoPanel
+                strategy={hashimotoStrategy}
+                analyzing={hashimotoAnalyzing}
+                ready={hashimotoReady}
+                turnCount={hashimotoTurnCount}
+              />
             </div>
           )}
         </div>
