@@ -49,3 +49,20 @@ export interface InterviewResult {
   latency: Latency;
   persona: Persona;
 }
+
+export interface HashimotoStrategy {
+  logic_goal: string;
+  logical_gap_to_bridge: string;
+  interviewer_persona_guidance: {
+    intent: string;
+    emotion_direction: string;
+    focus_point: string;
+  };
+  current_context: {
+    topic: string;
+    depth_level: number;
+    topic_changed: boolean;
+    transition_hint: string | null;
+    multimodal_feedback_requirement: string | null;
+  };
+}

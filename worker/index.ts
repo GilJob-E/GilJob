@@ -25,6 +25,8 @@ export interface Env {
   SPATIALREAL_API_KEY?: string; // reserved for vendor mint endpoint (Phase A)
   SPATIALREAL_AVATAR_ID?: string;
   SPATIALREAL_SESSION_TOKEN?: string;
+  // Hashimoto — Python FastAPI 분석 엔진
+  HASHIMOTO_API_URL?: string; // default: http://localhost:8000
 }
 
 const json = (data: unknown, status = 200) =>
@@ -75,7 +77,8 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
     if (
       url.pathname === '/api/live-token' ||
       url.pathname === '/api/avatarkit-token' ||
-      url.pathname === '/api/live-ws'
+      url.pathname === '/api/live-ws' ||
+      url.pathname.startsWith('/api/hashimoto/')
     ) {
       if (!isAllowedOrigin(req)) return errJson('forbidden', 403);
     }
@@ -85,6 +88,7 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
           ok: true,
           demo: env.DEMO_MODE === 'true',
           hasGeminiKey: !!env.GEMINI_API_KEY,
+          hasHashimoto: !!(env.HASHIMOTO_API_URL),
           model: env.GEMINI_LIVE_MODEL ?? 'gemini-3.1-flash-live-preview',
           ts: new Date().toISOString(),
         });
@@ -97,12 +101,37 @@ async function handleApi(req: Request, env: Env, url: URL): Promise<Response> {
       case '/api/live-ws':
         if (!env.GEMINI_API_KEY) return errJson('GEMINI_API_KEY not set', 503);
         return handleWsBridge(req, env.GEMINI_API_KEY);
+      case '/api/hashimoto/init':
+        if (req.method !== 'POST') return errJson('POST required', 405);
+        return proxyHashimoto(req, env, '/init');
+      case '/api/hashimoto/process_turn':
+        if (req.method !== 'POST') return errJson('POST required', 405);
+        return proxyHashimoto(req, env, '/process_turn');
       default:
         return errJson('not found', 404);
     }
   } catch (e) {
     return errJson((e as Error).message);
   }
+}
+
+async function proxyHashimoto(req: Request, env: Env, path: string): Promise<Response> {
+  const baseUrl = env.HASHIMOTO_API_URL ?? 'http://localhost:8000';
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: await req.text(),
+    });
+  } catch (e) {
+    return errJson(`hashimoto unreachable: ${(e as Error).message}`, 502);
+  }
+  const body = await upstream.text();
+  return new Response(body, {
+    status: upstream.status,
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+  });
 }
 
 /**

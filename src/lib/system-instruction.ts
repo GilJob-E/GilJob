@@ -1,4 +1,4 @@
-import type { Persona } from '../types';
+import type { Persona, HashimotoStrategy, TranscriptTurn } from '../types';
 
 const TONE_DESCRIPTIONS: Record<string, string> = {
   baseline: '편안한 자기소개 + 가장 자랑스러운 의사결정 한 가지를 듣는 워밍업',
@@ -8,11 +8,68 @@ const TONE_DESCRIPTIONS: Record<string, string> = {
   closing: '면접 마무리: 이 회사가 1년 안에 풀어야 할 문제 등 미래 지향 질문 후 짧은 인사로 종료',
 };
 
-export function buildSystemInstruction(persona: Persona): string {
+export function buildSystemInstruction(
+  persona: Persona,
+  strategy?: HashimotoStrategy,
+  history?: TranscriptTurn[],
+): string {
   const props = persona.propositions.map((p, i) => `${i + 1}. ${p}`).join('\n');
   const flow = persona.questions
     .map((q, i) => `${i + 1}) [${q.tone}] ${TONE_DESCRIPTIONS[q.tone] ?? q.tone}`)
     .join('\n');
+
+  // ── 이전 대화 기록 (재연결 시 Gemini 컨텍스트 복원) ──────────────────────
+  let historySection = '';
+  if (history && history.length > 0) {
+    const lines = history
+      .map(t => `${t.role === 'interviewer' ? '면접관' : '지원자'}: ${t.text}`)
+      .join('\n');
+    historySection = `
+
+## 현재까지의 면접 대화 기록
+${lines}
+
+위 대화가 이미 진행되었습니다. 면접은 계속 진행 중이며, 지원자의 다음 답변을 기다리세요. 위 대화를 바탕으로 다음 질문을 이어가세요.`;
+  }
+
+  // ── Hashimoto 분석 전략 (동적 주입 시) 또는 원칙 텍스트 (초기) ──────────
+  let hashimotoSection: string;
+  if (strategy) {
+    const ctx = strategy.current_context;
+    const guide = strategy.interviewer_persona_guidance;
+    const extras = [
+      ctx.topic_changed ? '- **주제 전환됨**: 새로운 주제로 자연스럽게 이동하세요.' : '',
+      ctx.transition_hint === 'direction_change' ? '- **방향 전환 필요**: 다른 각도에서 접근하세요.' : '',
+      ctx.multimodal_feedback_requirement ? `- **멀티모달 피드백**: ${ctx.multimodal_feedback_requirement}` : '',
+    ].filter(Boolean).join('\n');
+
+    hashimotoSection = `## Hashimoto 분석 엔진 — 다음 질문 전략
+- **논리 목표**: ${strategy.logic_goal}
+- **메워야 할 공백**: ${strategy.logical_gap_to_bridge}
+- **면접관 의도**: ${guide.intent}
+- **포커스**: ${guide.focus_point}
+- **추천 톤**: ${guide.emotion_direction}
+- **현재 주제**: ${ctx.topic} (깊이 ${ctx.depth_level}단계)
+${extras}
+
+이 전략을 최우선으로 반영하여 다음 질문을 생성하세요.`;
+  } else {
+    hashimotoSection = `## Hashimoto 논리 분석 엔진 통합
+질문 생성 시 다음 논리 분석 원칙을 적용하세요:
+- **Slot**: 아직 검증되지 않은 명제 단위. 답변이 충족되면 제거.
+- **Priority_Stack**: 최신 슬롯을 우선. LIFO 방식.
+- **Depth_Counter**: 같은 주제 내 연속 질문 수. 5회 초과 시 주제 전환.
+- **Abduction**: 답변의 논리적 공백에서 원인을 역추론해 후속 질문 생성.
+- **Fulfillment Score**: 답변 충족도 평가 (0.0-1.0). 0.7 이상이면 검증 완료.
+- **Response Type**: ANSWERED(충족), INSUFFICIENT(미충족), REFUSED(거부).
+- **Pruning**: 깊이가 깊어지면 스택 초기화 및 주제 전환.
+
+이 원칙을 바탕으로 논리적이고 깊이 있는 질문을 생성하세요.`;
+  }
+
+  const startLine = history && history.length > 0
+    ? ''
+    : '\n면접을 시작하면 짧은 인사 + 첫 번째 질문(baseline 워밍업)을 음성으로 전달하세요.';
 
   return `당신은 한국어로 진행하는 면접관입니다. 차분하고 진중하게, 한 번에 한 질문씩 자연스럽게 진행하세요.
 
@@ -42,5 +99,5 @@ ${flow}
 - ${persona.questions.length}번째 턴(closing) 답변이 끝나면 짧은 인사("오늘 면접은 여기까지입니다, 수고하셨어요" 같은 톤)로 면접을 마무리하세요.
 - 너무 빠르지도 너무 느리지도 않게, 자연스러운 면접관 호흡을 유지하세요.
 
-면접을 시작하면 짧은 인사 + 첫 번째 질문(baseline 워밍업)을 음성으로 전달하세요.`;
+${hashimotoSection}${historySection}${startLine}`;
 }

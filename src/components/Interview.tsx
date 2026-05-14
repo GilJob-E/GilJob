@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Avatar from './Avatar';
 import SpatialAvatar, { type SpatialAvatarHandle } from './SpatialAvatar';
 import { useLiveSession, type SessionState } from '../hooks/useLiveSession';
@@ -6,6 +6,7 @@ import { buildSystemInstruction } from '../lib/system-instruction';
 import type {
   AvatarStyle,
   ForcedState,
+  HashimotoStrategy,
   InterviewState,
   Latency,
   OrbColor,
@@ -111,6 +112,30 @@ function LatencyBars({ ttft }: { ttft: number }) {
   );
 }
 
+function HashimotoPanel({ strategy, analyzing }: { strategy: HashimotoStrategy | null; analyzing: boolean }) {
+  return (
+    <div className="vision-card">
+      <div className="vision-head">
+        <span className="caption-up">Hashimoto</span>
+        <span className="mono-xs" style={{ color: analyzing ? 'var(--accent)' : 'var(--muted)' }}>
+          {analyzing ? '분석 중…' : strategy ? '전략 주입됨' : '대기'}
+        </span>
+      </div>
+      {strategy && (
+        <div style={{ fontSize: 11, color: 'var(--muted-soft)', lineHeight: 1.6, padding: '6px 0' }}>
+          <div><span style={{ color: 'var(--ink)' }}>주제</span> {strategy.current_context.topic} (깊이 {strategy.current_context.depth_level})</div>
+          <div><span style={{ color: 'var(--ink)' }}>목표</span> {strategy.logic_goal}</div>
+          <div><span style={{ color: 'var(--ink)' }}>공백</span> {strategy.logical_gap_to_bridge}</div>
+          <div><span style={{ color: 'var(--ink)' }}>톤</span> {strategy.interviewer_persona_guidance.emotion_direction}</div>
+          {strategy.current_context.topic_changed && (
+            <div style={{ color: 'var(--accent)' }}>▶ 주제 전환</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Pipeline({ state }: { state: InterviewState }) {
   return (
     <div className="pipeline-card-compact">
@@ -160,6 +185,8 @@ export default function Interview({
   const [hasCapturedFrame, setHasCapturedFrame] = useState(false);
   const [streamingInterviewer, setStreamingInterviewer] = useState('');
   const [streamingCandidate, setStreamingCandidate] = useState('');
+  const [hashimotoStrategy, setHashimotoStrategy] = useState<HashimotoStrategy | null>(null);
+  const [hashimotoAnalyzing, setHashimotoAnalyzing] = useState(false);
 
   const inputAccumRef = useRef('');
   const outputAccumRef = useRef('');
@@ -171,10 +198,73 @@ export default function Interview({
   // the kickoff turn rather than letting it surface as a candidate utterance.
   const kickoffPendingRef = useRef(false);
   const completedRef = useRef(false);
+  const candidateTurnCountRef = useRef(0);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const spatialAvatarRef = useRef<SpatialAvatarHandle | null>(null);
+  // Stable ref so Hashimoto callbacks can read the latest transcript without
+  // becoming stale closures.
+  const transcriptLatestRef = useRef<TranscriptTurn[]>([]);
 
-  const systemInstruction = useMemo(() => buildSystemInstruction(persona), [persona]);
+  const systemInstruction = useMemo(
+    () => buildSystemInstruction(persona, hashimotoStrategy ?? undefined, transcriptLatestRef.current),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [persona, hashimotoStrategy],
+  );
+
+  // ── Hashimoto helpers ────────────────────────────────────────────────────
+
+  const hashimotoInit = useCallback(async (resumeText: string) => {
+    try {
+      const res = await fetch('/api/hashimoto/init', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ resume_text: resumeText, topic_count: 3 }),
+      });
+      if (!res.ok) throw new Error(`init ${res.status}`);
+      console.log('[hashimoto] initialized', await res.json());
+    } catch (e) {
+      console.warn('[hashimoto] init failed (non-fatal):', e);
+    }
+  }, []);
+
+  // Stable ref so the Hashimoto callback can call disconnect/connect without
+  // capturing a stale session closure (session is defined after this callback).
+  const sessionRef = useRef<{ disconnect: () => void; connect: () => Promise<void> } | null>(null);
+
+  // Called after each non-kickoff candidate turn. Fetches strategy, updates
+  // systemInstruction, and quietly reconnects so the next Gemini turn is
+  // informed by the new strategy + full conversation history.
+  const hashimotoProcessTurn = useCallback(
+    async (sttText: string, nextTranscript: TranscriptTurn[]) => {
+      setHashimotoAnalyzing(true);
+      try {
+        const res = await fetch('/api/hashimoto/process_turn', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ stt_text: sttText, anxiety: 50, confidence: 50 }),
+        });
+        if (!res.ok) throw new Error(`process_turn ${res.status}`);
+        const strategy = (await res.json()) as HashimotoStrategy;
+        console.log('[hashimoto] strategy', strategy);
+
+        // Update ref so the systemInstruction memo picks up the new transcript
+        // before reconnect.
+        transcriptLatestRef.current = nextTranscript;
+        setHashimotoStrategy(strategy);
+        // React will re-render with new systemInstruction on next tick.
+        // queueMicrotask ensures connect() runs after the render cycle so
+        // optsRef.current in useLiveSession has the updated systemInstruction.
+        queueMicrotask(() => {
+          sessionRef.current?.disconnect();
+          void sessionRef.current?.connect();
+        });
+      } catch (e) {
+        console.warn('[hashimoto] process_turn failed (non-fatal):', e);
+        setHashimotoAnalyzing(false);
+      }
+    },
+    [],
+  );
 
   const session = useLiveSession({
     systemInstruction,
@@ -222,6 +312,7 @@ export default function Interview({
       setStreamingCandidate('');
       setStreamingInterviewer('');
 
+      let nextTranscript: TranscriptTurn[] = [];
       setTranscript(prev => {
         const next = [...prev];
         if (candidateText) next.push({ role: 'candidate', text: candidateText });
@@ -229,27 +320,45 @@ export default function Interview({
           const idx = next.filter(t => t.role === 'interviewer').length + 1;
           next.push({ role: 'interviewer', text: interviewerText, idx });
         }
+        nextTranscript = next;
         return next;
       });
+
+      // Call Hashimoto after each real candidate answer. Skip kickoff turns
+      // and the last turn (interview about to complete).
+      if (candidateText && !wasKickoff && !completedRef.current) {
+        candidateTurnCountRef.current += 1;
+        if (candidateTurnCountRef.current < persona.questions.length) {
+          void hashimotoProcessTurn(candidateText, nextTranscript);
+        }
+      }
     },
     onError: err => {
       console.error('[live]', err);
     },
   });
 
+  // Keep sessionRef in sync so hashimotoProcessTurn can call disconnect/connect.
+  sessionRef.current = session;
+
   // Connect on mount + every persona change
   useEffect(() => {
     kickoffSentRef.current = false;
     kickoffPendingRef.current = false;
     completedRef.current = false;
+    candidateTurnCountRef.current = 0;
     inputAccumRef.current = '';
     outputAccumRef.current = '';
     turnStartRef.current = null;
+    transcriptLatestRef.current = [];
     setTranscript([]);
     setStreamingCandidate('');
     setStreamingInterviewer('');
     setLatency({ vad: 0, stt: 0, vision: 0, llm: 0, tts: 0 });
     setHasCapturedFrame(false);
+    setHashimotoStrategy(null);
+    setHashimotoAnalyzing(false);
+    void hashimotoInit(persona.resume);
     void session.connect();
     return () => session.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -258,6 +367,9 @@ export default function Interview({
   // Kick off the interview once setup completes. Path B uses sendKickoff
   // (manual VAD zero-content turn) instead of sendText so text input does
   // not contaminate a manual-VAD session and trigger 1007 mid-interview.
+  // After Hashimoto-triggered reconnects, kickoffSentRef stays true so we
+  // don't re-kickoff — the session resumes in 'ready' state waiting for
+  // the candidate's next answer.
   useEffect(() => {
     console.log('[interview] state=', session.state, 'kickoffSent=', kickoffSentRef.current);
     if (session.state === 'ready' && !kickoffSentRef.current) {
@@ -267,7 +379,12 @@ export default function Interview({
       console.log('[interview] sending kickoff (manual VAD)');
       session.sendKickoff();
     }
-  }, [session.state, session]);
+    // Hashimoto reconnect completed — release the analyzing lock so the
+    // candidate can start their next answer.
+    if (session.state === 'ready' && hashimotoAnalyzing) {
+      setHashimotoAnalyzing(false);
+    }
+  }, [session.state, session, hashimotoAnalyzing]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -322,7 +439,7 @@ export default function Interview({
   const turnIdx = Math.min(Math.max(0, interviewerCount - 1), persona.questions.length - 1);
   const currentQ = persona.questions[turnIdx] ?? persona.questions[0];
 
-  const isReadyForAnswer = session.state === 'ready' && !completedRef.current;
+  const isReadyForAnswer = session.state === 'ready' && !completedRef.current && !hashimotoAnalyzing;
   const isConnecting = session.state === 'connecting' || session.state === 'idle';
   const isError = session.state === 'error';
 
@@ -423,6 +540,7 @@ export default function Interview({
                 )}
                 {!isError && isConnecting && 'Gemini Live API에 연결 중…'}
                 {!isError && session.state === 'ready' && !kickoffSentRef.current && '세션 준비됨, 첫 질문 요청 중…'}
+                {!isError && session.state === 'ready' && hashimotoAnalyzing && 'Hashimoto 전략 분석 중…'}
                 {!isError && isReadyForAnswer && kickoffSentRef.current && 'Space 또는 버튼을 눌러 답변을 시작하세요.'}
                 {session.state === 'listening' && '발화 중. 영상 프레임이 1초 간격으로 송신됨.'}
                 {session.state === 'thinking' && 'Live API가 답변과 영상을 분석 중.'}
@@ -482,6 +600,7 @@ export default function Interview({
               <VisionPanel captured={hasCapturedFrame} captureFlash={captureFlash} />
               <LatencyBars ttft={latency.llm} />
               <Pipeline state={effectiveState} />
+              <HashimotoPanel strategy={hashimotoStrategy} analyzing={hashimotoAnalyzing} />
             </div>
           )}
         </div>
