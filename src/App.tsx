@@ -8,8 +8,7 @@ import type { AvatarStyle, ForcedState, InterviewResult, OrbColor, Theme } from 
 type Stage = 'pre' | 'interview' | 'results';
 
 const DEFAULTS = {
-  // 5월 통합: 기본 면접관 아바타 = SpatialReal 3D. 기존 SVG 4종은 fallback으로 보존.
-  avatarStyle: 'spatialreal' as AvatarStyle,
+  avatarStyle: 'illustration' as AvatarStyle,
   orbColor: 'lavender' as OrbColor,
   theme: 'light' as Theme,
   forcedState: 'auto' as ForcedState,

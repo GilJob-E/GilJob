@@ -21,15 +21,23 @@ export function buildSystemInstruction(
   // ── 이전 대화 기록 (재연결 시 Gemini 컨텍스트 복원) ──────────────────────
   let historySection = '';
   if (history && history.length > 0) {
+    const candidateDone = history.filter(t => t.role === 'candidate').length;
+    const interviewerDone = history.filter(t => t.role === 'interviewer').length;
+    const nextTurnIdx = interviewerDone; // 0-based, equals questions asked so far
+    const nextTone = persona.questions[nextTurnIdx]?.tone ?? 'closing';
+    const nextToneDesc = TONE_DESCRIPTIONS[nextTone] ?? nextTone;
+
     const lines = history
       .map(t => `${t.role === 'interviewer' ? '면접관' : '지원자'}: ${t.text}`)
       .join('\n');
     historySection = `
 
-## 현재까지의 면접 대화 기록
+## 현재까지의 면접 대화 기록 (${candidateDone}/${persona.questions.length}턴 완료)
 ${lines}
 
-위 대화가 이미 진행되었습니다. 면접은 계속 진행 중이며, 지원자의 다음 답변을 기다리세요. 위 대화를 바탕으로 다음 질문을 이어가세요.`;
+위 대화가 이미 진행되었습니다. 면접은 계속 진행 중입니다.
+**지금 해야 할 것**: ${nextTurnIdx + 1}번째 질문 [${nextTone}] — ${nextToneDesc}
+위 전략과 대화 기록을 바탕으로 바로 다음 질문을 하세요. 인사나 재소개는 생략하세요.`;
   }
 
   // ── Hashimoto 분석 전략 (동적 주입 시) 또는 원칙 텍스트 (초기) ──────────

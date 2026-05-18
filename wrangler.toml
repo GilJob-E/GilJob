@@ -10,7 +10,6 @@ not_found_handling = "single-page-application"
 
 [vars]
 DEMO_MODE = "false"
-GEMINI_API_KEY = "AIzaSyC3zwBcFEE6xDYFVfXlzItk_tj9a3wfzoQ"  # Local dev only
 HASHIMOTO_API_URL = "http://localhost:8000"  # Local dev; set via wrangler secret put in production
 
 # Real API integration (set via `wrangler secret put`):

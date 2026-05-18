@@ -153,14 +153,17 @@ function HashimotoPanel({
   analyzing,
   ready,
   turnCount,
+  systemInstruction,
 }: {
   strategy: HashimotoStrategy | null;
   analyzing: boolean;
   ready: boolean;
   turnCount: number;
+  systemInstruction: string;
 }) {
+  const [showPrompt, setShowPrompt] = useState(false);
   const statusLabel = analyzing ? 'ANALYZING' : turnCount > 0 ? `TURN ${turnCount}` : ready ? 'READY' : 'IDLE';
-  const statusColor = analyzing ? 'var(--accent)' : turnCount > 0 ? 'var(--success, #22c55e)' : ready ? 'var(--ink)' : 'var(--muted)';
+  const statusColor = analyzing ? 'var(--accent)' : turnCount > 0 ? 'var(--success)' : ready ? 'var(--ink)' : 'var(--muted)';
   const tone = strategy?.interviewer_persona_guidance.emotion_direction ?? '';
   const toneColor = TONE_COLOR[tone] ?? 'var(--muted)';
   const ctx = strategy?.current_context;
@@ -265,6 +268,29 @@ function HashimotoPanel({
           </div>
         </>
       )}
+
+      {/* System instruction viewer */}
+      <div style={{ height: 1, background: 'var(--hairline)', margin: '10px 0 8px' }} />
+      <button
+        onClick={() => setShowPrompt(p => !p)}
+        style={{
+          all: 'unset', cursor: 'pointer', fontSize: 10, color: 'var(--muted)',
+          display: 'flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        <span style={{ fontFamily: 'monospace' }}>{showPrompt ? '▲' : '▼'}</span>
+        System Instruction {showPrompt ? '숨기기' : '보기'}
+      </button>
+      {showPrompt && (
+        <pre style={{
+          fontSize: 10, lineHeight: 1.5, color: 'var(--ink)',
+          background: 'var(--canvas-soft)', borderRadius: 6, padding: 8,
+          margin: '6px 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          maxHeight: 320, overflowY: 'auto', fontFamily: 'monospace',
+        }}>
+          {systemInstruction}
+        </pre>
+      )}
     </div>
   );
 }
@@ -346,6 +372,11 @@ export default function Interview({
     [persona, hashimotoStrategy],
   );
 
+  const onPcmChunkCb = useCallback(
+    (b64: string) => { spatialAvatarRef.current?.pushPcm(b64); },
+    [],
+  );
+
   // ── Hashimoto helpers ────────────────────────────────────────────────────
 
   const hashimotoInit = useCallback(async (resumeText: string) => {
@@ -356,7 +387,7 @@ export default function Interview({
         body: JSON.stringify({ resume_text: resumeText, topic_count: 3 }),
       });
       if (!res.ok) throw new Error(`init ${res.status}`);
-      const data = await res.json() as { topics: string[]; current_topic: string };
+      const data = await res.json();
       console.log('[hashimoto] initialized', data);
       setHashimotoReady(true);
     } catch (e) {
@@ -367,6 +398,9 @@ export default function Interview({
   // Stable ref so the Hashimoto callback can call disconnect/connect without
   // capturing a stale session closure (session is defined after this callback).
   const sessionRef = useRef<{ disconnect: () => void; connect: () => Promise<void> } | null>(null);
+  // Set by hashimotoProcessTurn after state updates are queued; consumed by
+  // the useEffect below after React commits the new systemInstruction.
+  const reconnectNeededRef = useRef(false);
 
   // Called after each non-kickoff candidate turn. Fetches strategy, updates
   // systemInstruction, and quietly reconnects so the next Gemini turn is
@@ -384,18 +418,16 @@ export default function Interview({
         const strategy = (await res.json()) as HashimotoStrategy;
         console.log('[hashimoto] strategy', strategy);
 
-        // Update ref so the systemInstruction memo picks up the new transcript
-        // before reconnect.
+        // Snapshot the latest transcript so the systemInstruction memo can
+        // include it when React re-renders with the new strategy.
         transcriptLatestRef.current = nextTranscript;
         setHashimotoStrategy(strategy);
         setHashimotoTurnCount(c => c + 1);
-        // React will re-render with new systemInstruction on next tick.
-        // queueMicrotask ensures connect() runs after the render cycle so
-        // optsRef.current in useLiveSession has the updated systemInstruction.
-        queueMicrotask(() => {
-          sessionRef.current?.disconnect();
-          void sessionRef.current?.connect();
-        });
+        // Signal the useEffect below to reconnect after React has committed
+        // the new systemInstruction (useEffect fires post-commit, queueMicrotask
+        // fires pre-commit → stale systemInstruction was the root cause of the
+        // 7-turn bug where Gemini never saw the updated strategy/history).
+        reconnectNeededRef.current = true;
       } catch (e) {
         console.warn('[hashimoto] process_turn failed (non-fatal):', e);
         setHashimotoAnalyzing(false);
@@ -427,12 +459,7 @@ export default function Interview({
     // is a legacy SVG style, we leave `onPcmChunk` undefined so PCMPlayer
     // handles audio normally — without this guard, switching to an SVG style
     // would silently break audio (consumer set + ref null = sink to nowhere).
-    onPcmChunk:
-      avatarStyle === 'spatialreal'
-        ? b64 => {
-            spatialAvatarRef.current?.pushPcm(b64);
-          }
-        : undefined,
+    onPcmChunk: avatarStyle === 'spatialreal' ? onPcmChunkCb : undefined,
     onTurnComplete: () => {
       // Drain animation frames on the avatar SDK if the spatialreal style is
       // active. No-op for SVG styles (ref is null + we didn't fork audio).
@@ -478,6 +505,15 @@ export default function Interview({
 
   // Keep sessionRef in sync so hashimotoProcessTurn can call disconnect/connect.
   sessionRef.current = session;
+
+  // After React commits the new hashimotoStrategy (and thus new systemInstruction),
+  // perform the reconnect so useLiveSession's optsRef picks up the updated prompt.
+  useEffect(() => {
+    if (!reconnectNeededRef.current) return;
+    reconnectNeededRef.current = false;
+    sessionRef.current?.disconnect();
+    void sessionRef.current?.connect();
+  }, [hashimotoStrategy]);
 
   // Connect on mount + every persona change
   useEffect(() => {
@@ -561,21 +597,24 @@ export default function Interview({
       ? (forcedState as InterviewState)
       : mapSessionState(session.state);
 
-  const startAnswer = async () => {
+  const startAnswer = useCallback(async () => {
     if (session.state !== 'ready') return;
     setCaptureFlash(true);
     setTimeout(() => setCaptureFlash(false), 380);
     setHasCapturedFrame(true);
     turnStartRef.current = Date.now();
     await session.startTurn();
-  };
+  }, [session]);
 
   const finishAnswer = () => {
     if (session.state !== 'listening') return;
     session.endTurn();
   };
 
-  const interviewerCount = transcript.filter(t => t.role === 'interviewer').length;
+  const interviewerCount = useMemo(
+    () => transcript.filter(t => t.role === 'interviewer').length,
+    [transcript],
+  );
   const turnIdx = Math.min(Math.max(0, interviewerCount - 1), persona.questions.length - 1);
   const currentQ = persona.questions[turnIdx] ?? persona.questions[0];
 
@@ -737,15 +776,16 @@ export default function Interview({
 
           {debugVisible && (
             <div className="iv-col iv-debug fade-up">
-              <VisionPanel captured={hasCapturedFrame} captureFlash={captureFlash} />
-              <LatencyBars ttft={latency.llm} />
-              <Pipeline state={effectiveState} />
               <HashimotoPanel
                 strategy={hashimotoStrategy}
                 analyzing={hashimotoAnalyzing}
                 ready={hashimotoReady}
                 turnCount={hashimotoTurnCount}
+                systemInstruction={systemInstruction}
               />
+              <VisionPanel captured={hasCapturedFrame} captureFlash={captureFlash} />
+              <LatencyBars ttft={latency.llm} />
+              <Pipeline state={effectiveState} />
             </div>
           )}
         </div>

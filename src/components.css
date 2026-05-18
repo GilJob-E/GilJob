@@ -149,7 +149,7 @@
 }
 
 /* Debug column */
-.iv-debug { }
+.iv-debug { overflow-y: auto; }
 .vision-card, .latency-block, .pipeline-card-compact {
   background: var(--surface-card);
   border: 1px solid var(--hairline);

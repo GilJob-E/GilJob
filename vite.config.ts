@@ -25,7 +25,7 @@ export default defineConfig({
     proxy: {
       // ws: true forwards WebSocket upgrade requests (e.g. /api/live-ws) to
       // wrangler dev so the manual VAD bridge works end-to-end in vite dev.
-      '/api': { target: 'http://localhost:8787', ws: true },
+      '/api': { target: 'http://localhost:8788', ws: true },
     },
   },
   build: {
